@@ -243,12 +243,6 @@ GROUP_PRIORITY = (
     "events", "campaign", "rfps", "partners", "contact",
 )
 
-SCHEMA_GROUPS = (
-    "about/mission", "programs", "leadership/team", "annual report or financials PDF",
-    "news/press", "events", "careers/jobs", "RFPs/procurement", "campaign",
-    "partners/funders", "memberships",
-)
-
 log = logging.getLogger("scraper")
 
 # Token usage accumulated across the whole run, keyed by model.
@@ -594,22 +588,61 @@ def fetch(url: str) -> dict[str, Any]:
     return {"ok": False, "url": url, "error": last_error}
 
 
-def fetch_or_render(url: str, use_browser: bool = True) -> dict[str, Any]:
-    """fetch(), falling back to a real browser when a page looks bot-blocked.
+def browser_fetch_bytes(url: str) -> tuple[bytes, str]:
+    """Raw bytes through the browser's HTTP stack, for non-HTML resources.
+
+    Rendering a page is the wrong tool for a feed or a PDF - Chromium would
+    hand back its own XML viewer markup. This uses the browser's request API
+    instead, so the bytes are untouched but the TLS fingerprint and headers
+    are a real browser's, which is what gets past the block.
+    """
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            context = browser.new_context(user_agent=USER_AGENT)
+            response = context.request.get(
+                url, timeout=int(BROWSER_TIMEOUT * 1000)
+            )
+            if response.status >= 400:
+                raise RuntimeError(f"HTTP {response.status}")
+            content_type = (
+                response.headers.get("content-type", "").split(";")[0].strip().lower()
+            )
+            return response.body(), content_type
+        finally:
+            browser.close()
+
+
+def fetch_or_render(
+    url: str, use_browser: bool = True, prefer_raw: bool = False
+) -> dict[str, Any]:
+    """fetch(), falling back to a real browser when a resource looks bot-blocked.
 
     codeforamerica.org answers a plain HTTP client with 403 on every page,
-    homepage included, but serves headless Chromium normally.
+    its RSS feed and its 990 PDFs included, but serves a browser normally.
+    HTML is re-rendered (it may also need JavaScript); anything else is
+    re-fetched as raw bytes.
     """
     result = fetch(url)
     if result["ok"]:
         return result
     blocked = any(result["error"] == f"HTTP {status}" for status in BLOCKED_STATUS)
-    is_pdf = urlsplit(url.lower()).path.endswith(".pdf")
-    if not (blocked and use_browser) or is_pdf:
+    if not (blocked and use_browser):
         return result
 
     log.info("%s on %s, retrying with a browser", result["error"], url)
+    is_pdf = urlsplit(url.lower()).path.endswith(".pdf")
     try:
+        if prefer_raw or is_pdf:
+            content, content_type = browser_fetch_bytes(url)
+            return {
+                "ok": True, "url": url, "content": content[:MAX_DOWNLOAD_BYTES],
+                "content_type": content_type
+                or ("application/pdf" if is_pdf else "application/xml"),
+                "truncated": len(content) > MAX_DOWNLOAD_BYTES,
+            }
         html = render_with_browser(url)
     except Exception as exc:
         return {
@@ -914,22 +947,44 @@ def discover_sitemap_urls(base_url: str) -> list[str]:
     return (interesting + rest)[:MAX_SITEMAP_URLS]
 
 
-def discover_feed(html: str, base_url: str) -> str | None:
-    """RSS/Atom feed from <link rel=alternate>, else try /feed and /rss."""
+def _is_feed(result: dict[str, Any]) -> bool:
+    """Does a fetched response actually look like RSS or Atom?"""
+    return result["ok"] and (
+        "xml" in result["content_type"]
+        or result["content"].lstrip()[:5] in (b"<?xml", b"<rss")
+    )
+
+
+def discover_feed(
+    html: str, base_url: str, candidates: list[dict[str, str]] | None = None
+) -> str | None:
+    """RSS/Atom feed from <link rel=alternate>, else probe /feed and /rss.
+
+    Probed on the news or blog host as well as the main one. Organisations
+    routinely run the blog on a separate subdomain and declare the feed only
+    there: khanacademy.org advertises no feed, while blog.khanacademy.org has
+    a working one with ten dated posts - exactly the "why reach out now"
+    material the profile is short of.
+    """
     soup = BeautifulSoup(html, "lxml")
     for tag in soup.find_all("link", href=True):
         rel = " ".join(tag.get("rel") or []).lower()
         type_ = (tag.get("type") or "").lower()
         if "alternate" in rel and ("rss+xml" in type_ or "atom+xml" in type_):
             return normalise_url(urljoin(base_url, tag["href"]))
-    for path in ("/feed", "/rss"):
-        candidate = urljoin(origin_of(base_url), path)
-        result = fetch(candidate)
-        if result["ok"] and (
-            "xml" in result["content_type"]
-            or result["content"].lstrip()[:5] in (b"<?xml", b"<rss")
-        ):
-            return candidate
+
+    origins = [origin_of(base_url)]
+    for link in candidates or []:
+        low = link["url"].lower()
+        if any(word in low for word in ("news", "blog", "press", "stories")):
+            origin = origin_of(link["url"])
+            if origin not in origins:
+                origins.append(origin)
+    for origin in origins[:2]:
+        for path in ("/feed", "/rss"):
+            candidate = urljoin(origin, path)
+            if _is_feed(fetch(candidate)):
+                return candidate
     return None
 
 
@@ -960,7 +1015,9 @@ def clean_candidates(
     return list(best.values())
 
 
-def discover_candidates(home_url: str, home_html: str) -> dict[str, Any]:
+def discover_candidates(
+    home_url: str, home_html: str, use_browser: bool = True
+) -> dict[str, Any]:
     """Everything link-related for one site: candidates, feed, feed items."""
     links = extract_links(home_html, home_url)
     sitemap_urls = discover_sitemap_urls(home_url)
@@ -970,10 +1027,10 @@ def discover_candidates(home_url: str, home_html: str) -> dict[str, Any]:
     ]
     candidates = clean_candidates(links, home_url=home_url)
 
-    feed_url = discover_feed(home_html, home_url)
+    feed_url = discover_feed(home_html, home_url, candidates)
     feed_items: list[dict[str, str | None]] = []
     if feed_url:
-        result = fetch(feed_url)
+        result = fetch_or_render(feed_url, use_browser=use_browser, prefer_raw=True)
         if result["ok"]:
             feed_items = parse_feed(result["content"])
         else:
@@ -1246,12 +1303,12 @@ def _parse_document(
 
     html = result["content"].decode("utf-8", "replace")
     method = "browser" if result.get("rendered") else "http"
-    text = html_to_text(html, url, keep_footer=picked.get("is_home", False))
+    text = html_to_text(html, url)
     if len(text) < MIN_TEXT_CHARS and use_browser and method == "http":
         log.info("thin page (%d chars), rendering with browser: %s", len(text), url)
         try:
             html = render_with_browser(url)
-            text = html_to_text(html, url, keep_footer=picked.get("is_home", False))
+            text = html_to_text(html, url)
             method = "browser"
         except Exception as exc:
             log.warning("browser render failed for %s: %s", url, exc)
@@ -1797,9 +1854,15 @@ def search_variants(name: str) -> list[str]:
     words = cleaned.split()
     while words and words[-1].lower().strip(".") in LEGAL_SUFFIXES:
         words.pop()
+    # A leading "The" is enough to break the search on its own: "The Trussell
+    # Trust" returns nothing where "Trussell Trust" returns three matches.
+    if len(words) > 1 and words[0].lower() == "the":
+        words = words[1:]
     variants = [" ".join(words), cleaned, name]
     if len(words) > 4:
         variants.insert(1, " ".join(words[:4]))
+    if len(words) > 2:
+        variants.append(" ".join(words[:2]))
     seen: set[str] = set()
     ordered = []
     for variant in variants:
@@ -1816,7 +1879,10 @@ def propublica_search(name: str) -> list[dict[str, Any]]:
     for variant in search_variants(name):
         result = fetch(f"{PROPUBLICA_BASE}search.json?q={quote_plus(variant)}")
         if not result["ok"]:
-            last_error = result["error"]
+            # This endpoint answers "no matches" with a 404 rather than an
+            # empty result set, so a 404 is an answer, not a failure.
+            if result["error"] != "HTTP 404":
+                last_error = result["error"]
             log.debug("ProPublica search %r: %s", variant, result["error"])
             continue
         try:
@@ -1846,6 +1912,36 @@ def propublica_organization(ein: str) -> dict[str, Any] | None:
         return None
 
 
+def normalise_org_name(name: str) -> str:
+    """Lowercase, strip punctuation, a leading "the" and legal suffixes.
+
+    Applied to both sides before matching so "Khan Academy" and "Khan Academy
+    Inc" compare as the same organisation.
+    """
+    cleaned = re.sub(r"[^\w\s&]", " ", name.lower())
+    words = cleaned.split()
+    while words and words[-1].strip(".") in LEGAL_SUFFIXES:
+        words.pop()
+    if len(words) > 1 and words[0] == "the":
+        words = words[1:]
+    return " ".join(words)
+
+
+def name_similarity(left: str, right: str) -> float:
+    """How alike two organisation names are, 0-100.
+
+    The lower of token_set_ratio and token_sort_ratio. token_set_ratio alone
+    returns 100 whenever one name's tokens are a subset of the other's, which
+    matched "Trussell" to "Robert And Martha Trussell Familyfoundation" and
+    "Feeding America" to its independent member food banks. Requiring both to
+    agree rejects a name that merely contains the query.
+    """
+    left, right = normalise_org_name(left), normalise_org_name(right)
+    if not left or not right:
+        return 0.0
+    return min(fuzz.token_set_ratio(left, right), fuzz.token_sort_ratio(left, right))
+
+
 def match_propublica(
     name: str, candidates: list[dict[str, Any]], hq_city: str | None = None
 ) -> tuple[dict[str, Any] | None, float]:
@@ -1853,13 +1949,13 @@ def match_propublica(
 
     Deliberately strict: "Feeding America" has sixteen search hits, most of
     them independent member food banks. A wrong EIN is worse than no EIN,
-    because it silently attaches someone else's finances.
+    because it silently attaches someone else's finances to the profile.
     """
     best: dict[str, Any] | None = None
     best_score = 0.0
     city = (hq_city or "").split(",")[0].strip().lower()
     for candidate in candidates:
-        score = fuzz.token_set_ratio(name.lower(), (candidate.get("name") or "").lower())
+        score = name_similarity(name, candidate.get("name") or "")
         if city and city == (candidate.get("city") or "").strip().lower():
             score = min(100.0, score + 5)
         if score > best_score:
@@ -2075,7 +2171,11 @@ CSV_COLUMNS = [
 def write_json(profile: NonprofitProfile) -> Path:
     """Write output/<slug>.json and return the path."""
     OUTPUT_DIR.mkdir(exist_ok=True)
-    path = OUTPUT_DIR / f"{slugify(profile.organization.name)}.json"
+    # Keyed on the website, not the extracted name: the name can come back
+    # slightly differently between runs ("Trussell" vs "Trussell (The
+    # Trussell Trust)") and would leave a stale duplicate behind each time.
+    host = registrable_domain(urlsplit(profile.organization.website).netloc)
+    path = OUTPUT_DIR / f"{slugify(host or profile.organization.name)}.json"
     path.write_text(profile.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -2194,7 +2294,7 @@ def process_org(value: str, use_browser: bool = True) -> NonprofitProfile:
         raise RuntimeError(f"could not fetch {home_url}: {home['error']}")
     home_url = home["url"]
 
-    found = discover_candidates(home_url, home["html"])
+    found = discover_candidates(home_url, home["html"], use_browser=use_browser)
     candidates = found["candidates"]
     if not candidates:
         warnings.append("no candidate links found on the homepage")
@@ -2470,7 +2570,7 @@ def show_stage(
         return 1
 
     home_url, home_html = home["url"], home["html"]
-    found = discover_candidates(home_url, home_html)
+    found = discover_candidates(home_url, home_html, use_browser=use_browser)
 
     print(f"\nhomepage      {home_url}  ({len(home_html):,} chars html, "
           f"via {home['method']})")

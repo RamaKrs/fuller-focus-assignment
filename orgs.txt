@@ -1,0 +1,6 @@
+# Test set. One organisation per line: a name or a URL.
+Feeding America
+https://www.charitywater.org
+Code for America
+https://www.trusselltrust.org
+https://www.khanacademy.org
