@@ -66,10 +66,10 @@ PRICES: dict[str, tuple[float, float]] = {
 }
 
 # Crawl limits.
-MAX_PAGES = 6                # pages fetched per org, on top of the homepage
-RESERVED_REPORT_SLOTS = 2    # of MAX_PAGES, held for financial documents
+MAX_PAGES = 4                # pages fetched per org, on top of the homepage
+RESERVED_REPORT_SLOTS = 1    # of MAX_PAGES, held for financial documents
 RESERVE_MIN_SCORE = 4        # a reserved slot needs an unambiguous signal
-MAX_REPORT_PDFS = 2          # report PDFs followed one level below a page
+MAX_REPORT_PDFS = 1          # report PDFs followed one level below a page
 MAX_PDF_PAGES = 16           # pages read from any single PDF
 MAX_PDF_HEAD_PAGES = 6       # always read this many from the front
 MAX_CHARS_PER_DOC = 15_000   # per-document cap before the extraction prompt
@@ -234,20 +234,13 @@ GROUP_KEYWORDS: dict[str, tuple[str, ...]] = {
     "programs": ("program", "what-we-do", "our-work", "initiative", "services"),
     "leadership": ("leadership", "our-team", "meet-the-team", "staff", "board",
                    "governance", "executive", "trustees"),
-    "careers": ("career", "/jobs", "job-openings", "employment", "vacanc",
-                "work-with-us", "join-us", "join-our-team"),
     "news": ("news", "press", "blog", "media", "stories"),
-    "events": ("event", "gala", "fundrais", "walk", "conference"),
-    "rfps": ("rfp", "procurement", "tender", "request-for-proposal"),
     "campaign": ("campaign", "appeal"),
-    "partners": ("partner", "funder", "supporter", "sponsor", "corporate"),
-    "contact": ("contact",),
 }
 
 # Order the extraction prompt is filled in when the character budget is tight.
 GROUP_PRIORITY = (
-    "financials", "about", "programs", "leadership", "careers", "news",
-    "events", "campaign", "rfps", "partners", "contact",
+    "financials", "about", "programs", "leadership", "news", "campaign",
 )
 
 log = logging.getLogger("scraper")
@@ -286,17 +279,20 @@ def slugify(text: str) -> str:
 # questions — Is this a good fit? Can they afford it? Who do I contact?
 # Why reach out now?
 
-Seniority = Literal["executive", "senior", "mid", "entry", "unknown"]
 GeographicScope = Literal["local", "national", "international"]
-EventType = Literal["gala", "walk_run_ride", "auction", "conference", "community", "other"]
 CampaignStatus = Literal["active", "completed", "announced", "unknown"]
-ProjectStatus = Literal["planned", "in_progress", "completed", "unknown"]
 SizeBucket = Literal["<1M", "1M-10M", "10M-100M", "100M+", "unknown"]
 FinancialsSource = Literal["propublica", "annual_report", "none"]
 CauseSource = Literal["irs_ntee", "llm"]
 ResolutionMethod = Literal["url_given", "llm_guess_verified"]
 PageType = Literal["html", "pdf", "rss", "sitemap"]
 FetchMethod = Literal["http", "browser"]
+MajorGroup = Literal[
+    "Arts, Culture & Humanities", "Education", "Environment & Animals",
+    "Health", "Human Services", "International, Foreign Affairs",
+    "Public, Societal Benefit", "Religion Related",
+    "Mutual/Membership Benefit", "Unknown",
+]
 
 
 class Organization(BaseModel):
@@ -356,33 +352,12 @@ class Leader(BaseModel):
 
 class Contacts(BaseModel):
     leaders: list[Leader] = Field(default_factory=list)
-    email: str | None = None
     phone: str | None = None
-    contact_url: str | None = None
-
-
-class OpenRole(BaseModel):
-    title: str
-    seniority: Seniority = "unknown"
-    url: str | None = None
-
-
-class RFP(BaseModel):
-    title: str
-    deadline: str | None = None
-    url: str | None = None
 
 
 class LeadershipChange(BaseModel):
     description: str
     date: str | None = None
-    source_url: str | None = None
-
-
-class CapitalProject(BaseModel):
-    description: str
-    status: ProjectStatus = "unknown"
-    source_url: str | None = None
 
 
 class Campaign(BaseModel):
@@ -390,15 +365,10 @@ class Campaign(BaseModel):
     goal: float | None = None
     raised: float | None = None
     status: CampaignStatus = "unknown"
-    source_url: str | None = None
 
 
 class BuyingSignals(BaseModel):
-    open_roles: list[OpenRole] = Field(default_factory=list)
-    executive_search_open: bool = False           # computed
-    rfps: list[RFP] = Field(default_factory=list)
     leadership_changes: list[LeadershipChange] = Field(default_factory=list)
-    capital_projects: list[CapitalProject] = Field(default_factory=list)
     campaign: Campaign | None = None
 
 
@@ -408,26 +378,8 @@ class NewsItem(BaseModel):
     url: str | None = None
 
 
-class Event(BaseModel):
-    name: str
-    type: EventType = "other"
-    date: str | None = None
-    url: str | None = None
-
-
 class Timing(BaseModel):
     recent_news: list[NewsItem] = Field(default_factory=list)
-    events: list[Event] = Field(default_factory=list)
-
-
-class Funder(BaseModel):
-    name: str
-    amount: float | None = None
-
-
-class Network(BaseModel):
-    funders: list[Funder] = Field(default_factory=list)
-    memberships: list[str] = Field(default_factory=list)
 
 
 class CrawledPage(BaseModel):
@@ -464,22 +416,13 @@ class NonprofitProfile(BaseModel):
     contacts: Contacts = Field(default_factory=Contacts)
     buying_signals: BuyingSignals = Field(default_factory=BuyingSignals)
     timing: Timing = Field(default_factory=Timing)
-    network: Network = Field(default_factory=Network)
     meta: Meta
-
-
-MajorGroup = Literal[
-    "Arts, Culture & Humanities", "Education", "Environment & Animals",
-    "Health", "Human Services", "International, Foreign Affairs",
-    "Public, Societal Benefit", "Religion Related",
-    "Mutual/Membership Benefit", "Unknown",
-]
 
 
 # --- what the extraction model is asked for --------------------------------
 # These mirror the schema above minus every computed field. The model is never
-# shown size_bucket, revenue_growth_pct, executive_search_open or the NTEE
-# code, so it cannot guess at values that code owns.
+# shown size_bucket, revenue_growth_pct or the NTEE code, so it cannot guess at
+# values that code owns.
 
 
 class OrganizationExtract(BaseModel):
@@ -503,19 +446,16 @@ class FinancialsExtract(BaseModel):
     auditor_firm: str | None = None
 
 
-class BuyingSignalsExtract(BaseModel):
-    open_roles: list[OpenRole] = Field(default_factory=list)
-    rfps: list[RFP] = Field(default_factory=list)
-    leadership_changes: list[LeadershipChange] = Field(default_factory=list)
-    capital_projects: list[CapitalProject] = Field(default_factory=list)
-    campaign: Campaign | None = None
-
-
 class FieldSource(BaseModel):
-    """Which pages a group of fields was read from."""
+    """Which numbered sources a group of fields was read from.
+
+    Source numbers rather than URLs: echoing back a 137-character CDN link for
+    every group was about a fifth of the reply, and code can map a number to a
+    URL for free.
+    """
 
     group: str
-    urls: list[str] = Field(default_factory=list)
+    sources: list[int] = Field(default_factory=list)
 
 
 class ExtractionResult(BaseModel):
@@ -525,12 +465,9 @@ class ExtractionResult(BaseModel):
     fit: FitExtract = Field(default_factory=FitExtract)
     financials: FinancialsExtract = Field(default_factory=FinancialsExtract)
     contacts: Contacts = Field(default_factory=Contacts)
-    buying_signals: BuyingSignalsExtract = Field(default_factory=BuyingSignalsExtract)
+    buying_signals: BuyingSignals = Field(default_factory=BuyingSignals)
     timing: Timing = Field(default_factory=Timing)
-    network: Network = Field(default_factory=Network)
     field_sources: list[FieldSource] = Field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
 # 3. HTTP HELPERS
 # ---------------------------------------------------------------------------
@@ -1514,8 +1451,7 @@ def client() -> anthropic.Anthropic:
 
 
 SchemaGroup = Literal[
-    "about", "programs", "leadership", "careers", "news", "events", "rfps",
-    "campaign", "partners", "contact", "financials",
+    "about", "programs", "leadership", "news", "campaign", "financials",
 ]
 
 
@@ -1536,9 +1472,8 @@ You choose which pages of a nonprofit's website are worth reading in full.
 
 The pages you pick are read by a later step that fills in a structured profile
 for a company selling services to this nonprofit. It needs: mission, programs,
-leadership and staff, contact details, open roles, RFPs or procurement notices,
-leadership changes, capital projects, fundraising campaigns, recent news,
-events, funders and partners, and memberships.
+leadership and staff, a phone number, leadership changes, a named fundraising
+campaign, and recent news.
 
 Annual reports, 990s and financial statements are already collected separately.
 Do not spend a pick on them.
@@ -1656,20 +1591,21 @@ Rules:
   from a staff list.
 - campaign: a named fundraising campaign with a goal or a total raised. One
   campaign object, or null. Do not treat a general donate button as one.
-- open_roles: only actual job postings. seniority 'executive' means C-suite,
-  chief officer, executive director, president or vice-president.
 - recent_news: dated news or press items the organisation published. Prefer
   the news feed and news pages. Do not turn annual-report highlights or
   undated achievements into news items.
-- contact_url: a page whose purpose is contacting the organisation. A careers
-  or donate page is not a contact page - use null instead.
 - cause_area: choose the single closest major group from the allowed values.
-- field_sources: for each group you filled in, list the source URLs the
-  information came from, copying each URL exactly as it appears after
-  '=== SOURCE (type): ' in the headers. URLs only, no type suffix.
+- field_sources: for each group you filled in, list the SOURCE NUMBERS the
+  information came from, as shown in the '=== SOURCE n ... ===' headers.
+  Numbers only, never URLs.
 
-Limits: programs 8, leaders 10, open_roles 15, recent_news 5 (most recent),
-events 8, funders 10, memberships 10.
+Be brief in wording, not in coverage. Write each field tersely - a phrase
+rather than a sentence wherever it still reads clearly. This applies to how
+you write a field, never to how many items you find: if a page lists ten
+people, return ten.
+
+Limits: programs 6, each description at most 15 words. leaders 10.
+recent_news 3, most recent first.
 
 Reply with a single JSON object matching this schema and nothing else - no
 prose, no explanation, no markdown fences:
@@ -1688,9 +1624,8 @@ SECTION_MODELS: dict[str, type[BaseModel]] = {
     "fit": FitExtract,
     "financials": FinancialsExtract,
     "contacts": Contacts,
-    "buying_signals": BuyingSignalsExtract,
+    "buying_signals": BuyingSignals,
     "timing": Timing,
-    "network": Network,
 }
 
 
@@ -1718,22 +1653,36 @@ def parse_json_reply(text: str) -> dict[str, Any]:
 
 
 def _normalise_field_sources(raw: Any) -> list[FieldSource]:
-    """Accept either [{group, urls}] or {group: [urls]}."""
+    """Accept [{group, sources}] or {group: [numbers]}."""
     sources: list[FieldSource] = []
     if isinstance(raw, dict):
-        raw = [{"group": key, "urls": value} for key, value in raw.items()]
+        raw = [{"group": key, "sources": value} for key, value in raw.items()]
     for item in raw or []:
         try:
-            source = FieldSource.model_validate(item)
+            sources.append(FieldSource.model_validate(item))
         except ValidationError:
             continue
-        # Strip a trailing "(html)"/"(pdf)" if the model copied the header type.
-        source.urls = [
-            re.sub(r"\s*\((?:html|pdf|rss|sitemap)\)\s*$", "", url)
-            for url in source.urls
-        ]
-        sources.append(source)
     return sources
+
+
+def expand_field_sources(
+    field_sources: list[FieldSource], sources: list[dict[str, Any]]
+) -> dict[str, list[str]]:
+    """Turn the model's source numbers back into URLs for the output file.
+
+    The model pays by the token, a reader does not: numbers on the way out,
+    readable URLs in the saved profile.
+    """
+    expanded: dict[str, list[str]] = {}
+    for entry in field_sources:
+        urls = [
+            sources[number - 1]["url"]
+            for number in entry.sources
+            if 1 <= number <= len(sources)
+        ]
+        if urls:
+            expanded[entry.group] = urls
+    return expanded
 
 
 def salvage_extraction(
@@ -1772,20 +1721,39 @@ def build_extraction_prompt(
     documents: list[dict[str, Any]], feed_items: list[dict[str, Any]]
 ) -> str:
     """Label every document with its source URL so citations are possible."""
-    parts = [
-        f"=== SOURCE ({document['type']}): {document['url']} ===\n"
-        f"{document['text']}"
-        for document in documents
-        if document["text"]
+    parts = []
+    for number, document in enumerate(source_list(documents, feed_items), start=1):
+        if document["kind"] == "rss":
+            body = "\n".join(
+                f"- {item.get('date') or 'no date'} | {item.get('title') or ''} "
+                f"| {item.get('link') or ''}"
+                for item in document["items"]
+            )
+            parts.append(f"=== SOURCE {number} (rss): site news feed ===\n{body}")
+        else:
+            parts.append(
+                f"=== SOURCE {number} ({document['type']}): {document['url']} ===\n"
+                f"{document['text']}"
+            )
+    return "\n\n".join(parts)
+
+
+def source_list(
+    documents: list[dict[str, Any]], feed_items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The numbered sources shown to the model, in order.
+
+    Kept as one function so the prompt and the later number-to-URL expansion
+    cannot disagree about what source 3 was.
+    """
+    sources: list[dict[str, Any]] = [
+        {**document, "kind": "doc"} for document in documents if document["text"]
     ]
     if feed_items:
-        lines = "\n".join(
-            f"- {item.get('date') or 'no date'} | {item.get('title') or ''} "
-            f"| {item.get('link') or ''}"
-            for item in feed_items
+        sources.append(
+            {"kind": "rss", "url": "site news feed", "items": feed_items}
         )
-        parts.append(f"=== SOURCE (rss): site news feed ===\n{lines}")
-    return "\n\n".join(parts)
+    return sources
 
 
 def extract(
@@ -1812,6 +1780,12 @@ def extract(
                 max_tokens=8000,
                 system=system,
                 messages=messages,
+                # Sonnet 5 thinks by default, and thinking is billed as
+                # output. On a real extraction it was 76% of the output
+                # tokens and made the result no better - measured on
+                # charity: water, 5,197 output tokens against 1,266, where
+                # the cheaper run actually found one more fiscal year.
+                output_config={"effort": "low"},
             )
             record_usage(
                 EXTRACT_MODEL, response.usage.input_tokens,
@@ -2158,10 +2132,6 @@ def post_process(profile: NonprofitProfile) -> None:
     model is never asked for a value that can be derived - that is what keeps
     categories consistent across organisations.
     """
-    profile.buying_signals.executive_search_open = any(
-        role.seniority == "executive" for role in profile.buying_signals.open_roles
-    )
-
     years = profile.financials.years
     profile.financials.revenue_growth_pct = revenue_growth_pct(years)
     newest = latest_year(years)
@@ -2179,14 +2149,13 @@ def post_process(profile: NonprofitProfile) -> None:
 # ---------------------------------------------------------------------------
 
 CSV_COLUMNS = [
-    "name", "website", "country", "hq_city", "ein", "cause_area",
-    "geographic_scope", "size_bucket", "latest_revenue", "latest_fiscal_year",
-    "revenue_growth_pct", "mission", "num_programs", "top_leader_name",
-    "top_leader_title", "email", "phone", "num_open_roles",
-    "executive_search_open", "num_rfps", "has_leadership_change",
-    "has_active_campaign", "campaign_name", "num_events", "latest_news_title",
-    "latest_news_date", "funders", "memberships", "auditor_firm", "crawled_at",
-    "cost_usd", "num_warnings",
+    "name", "website", "country", "hq_city", "ein", "year_founded",
+    "cause_area", "geographic_scope", "size_bucket", "latest_revenue",
+    "latest_fiscal_year", "revenue_growth_pct", "employee_count",
+    "auditor_firm", "mission", "num_programs", "top_leader_name",
+    "top_leader_title", "phone", "has_leadership_change",
+    "has_active_campaign", "campaign_name", "latest_news_title",
+    "latest_news_date", "crawled_at", "cost_usd", "num_warnings",
 ]
 
 
@@ -2218,30 +2187,25 @@ def profile_to_row(profile: NonprofitProfile) -> dict[str, Any]:
         "country": profile.organization.country,
         "hq_city": profile.organization.hq_city,
         "ein": profile.organization.ein,
+        "year_founded": profile.organization.year_founded,
         "cause_area": profile.fit.cause_area.major_group,
         "geographic_scope": profile.fit.geographic_scope,
         "size_bucket": profile.financials.size_bucket,
         "latest_revenue": newest.revenue if newest else None,
         "latest_fiscal_year": newest.fiscal_year if newest else None,
         "revenue_growth_pct": profile.financials.revenue_growth_pct,
+        "employee_count": profile.financials.employee_count,
+        "auditor_firm": profile.financials.auditor_firm,
         "mission": profile.fit.mission,
         "num_programs": len(profile.fit.programs),
         "top_leader_name": leader.name if leader else None,
         "top_leader_title": leader.title if leader else None,
-        "email": profile.contacts.email,
         "phone": profile.contacts.phone,
-        "num_open_roles": len(profile.buying_signals.open_roles),
-        "executive_search_open": profile.buying_signals.executive_search_open,
-        "num_rfps": len(profile.buying_signals.rfps),
         "has_leadership_change": bool(profile.buying_signals.leadership_changes),
         "has_active_campaign": bool(campaign and campaign.status == "active"),
         "campaign_name": campaign.name if campaign else None,
-        "num_events": len(profile.timing.events),
         "latest_news_title": news.title if news else None,
         "latest_news_date": news.date if news else None,
-        "funders": "; ".join(funder.name for funder in profile.network.funders),
-        "memberships": "; ".join(profile.network.memberships),
-        "auditor_firm": profile.financials.auditor_firm,
         "crawled_at": profile.meta.crawled_at,
         "cost_usd": profile.meta.cost_usd,
         "num_warnings": len(profile.meta.warnings),
@@ -2364,15 +2328,8 @@ def process_org(value: str, use_browser: bool = True) -> NonprofitProfile:
             source="annual_report" if extracted.financials.years else "none",
         ),
         contacts=extracted.contacts,
-        buying_signals=BuyingSignals(
-            open_roles=extracted.buying_signals.open_roles,
-            rfps=extracted.buying_signals.rfps,
-            leadership_changes=extracted.buying_signals.leadership_changes,
-            capital_projects=extracted.buying_signals.capital_projects,
-            campaign=extracted.buying_signals.campaign,
-        ),
+        buying_signals=extracted.buying_signals,
         timing=extracted.timing,
-        network=extracted.network,
         meta=Meta(
             input=value,
             resolved_url=home_url,
@@ -2389,9 +2346,9 @@ def process_org(value: str, use_browser: bool = True) -> NonprofitProfile:
                 FailedPage(url=failure["url"], error=failure["error"])
                 for failure in collected["failed_pages"]
             ],
-            field_sources={
-                source.group: source.urls for source in extracted.field_sources
-            },
+            field_sources=expand_field_sources(
+                extracted.field_sources, source_list(documents, found["feed_items"])
+            ),
             warnings=warnings,
         ),
     )
@@ -2523,9 +2480,8 @@ def print_profile(profile: NonprofitProfile) -> None:
           f"{profile.financials.source})")
     print(f"  programs {len(profile.fit.programs)}   "
           f"leaders {len(profile.contacts.leaders)}   "
-          f"roles {len(profile.buying_signals.open_roles)}   "
           f"news {len(profile.timing.recent_news)}   "
-          f"events {len(profile.timing.events)}")
+          f"campaign {'yes' if profile.buying_signals.campaign else 'no'}")
     for warning in profile.meta.warnings:
         print(f"  warning     {warning}")
 
@@ -2537,10 +2493,10 @@ COVERAGE_FIELDS: dict[str, Any] = {
     "financials": lambda p: bool(p.financials.years),
     "cause area": lambda p: p.fit.cause_area.major_group != "Unknown",
     "leaders": lambda p: bool(p.contacts.leaders),
-    "phone or email": lambda p: bool(p.contacts.phone or p.contacts.email),
-    "open roles": lambda p: bool(p.buying_signals.open_roles),
+    "phone": lambda p: bool(p.contacts.phone),
+    "auditor": lambda p: bool(p.financials.auditor_firm),
     "news": lambda p: bool(p.timing.recent_news),
-    "events": lambda p: bool(p.timing.events),
+    "campaign": lambda p: p.buying_signals.campaign is not None,
 }
 
 

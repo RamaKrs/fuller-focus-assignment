@@ -2,25 +2,25 @@
   "organization": {
     "name": "Code for America Labs, Inc.",
     "website": "https://www.codeforamerica.org/",
-    "country": "US",
-    "hq_city": "San Francisco, CA",
+    "country": "United States",
+    "hq_city": "San Francisco",
     "ein": "27-1067272",
     "year_founded": 2009
   },
   "fit": {
-    "mission": "Code for America is a nonprofit that believes government can work in the digital age.",
+    "mission": "Code for America believes government can work for the people, by the people, in the digital age.",
     "programs": [
       {
         "name": "Safety Net",
-        "description": "Modernizing the digital delivery of benefits for equitable outcomes, with the goal of delivering $30 billion in benefits to 13 million people across 15 states."
+        "description": "Modernizing digital delivery of benefits to reach 13 million people across 15 states."
       },
       {
-        "name": "EITC (Earned Income Tax Credit) / Tax Benefits",
-        "description": "Works to change how Americans with low or no incomes access tax credits and flexible cash owed to them, aiming to close the $40 billion tax benefits gap and simplify tax filing (e.g., GetCTC, GetYourRefund)."
+        "name": "EITC (Tax Benefits)",
+        "description": "Simplifying tax filing to help people access tax credits owed to them."
       },
       {
         "name": "Clear My Record",
-        "description": "Works toward end-to-end automatic criminal record clearance being the standard in all 50 states, partnering with states like Utah and supporting legislation such as Minnesota's Clean Slate law."
+        "description": "Transforming criminal record clearance to remove barriers to opportunity."
       }
     ],
     "cause_area": {
@@ -81,16 +81,10 @@
         "title": "Chief Executive Officer"
       }
     ],
-    "email": null,
-    "phone": "415-816-1286",
-    "contact_url": null
+    "phone": "415-816-1286"
   },
   "buying_signals": {
-    "open_roles": [],
-    "executive_search_open": false,
-    "rfps": [],
     "leadership_changes": [],
-    "capital_projects": [],
     "campaign": null
   },
   "timing": {
@@ -109,29 +103,14 @@
         "title": "How We Built Our AI Principles",
         "date": "2026-09-15",
         "url": "https://codeforamerica.org/news/how-we-built-our-ai-principles/"
-      },
-      {
-        "title": "Code for America Launches SimpleFile to Expand Access to Tax Benefits",
-        "date": "2026-08-14",
-        "url": "https://codeforamerica.org/news/simplefile-launch/"
-      },
-      {
-        "title": "Helping States Respond to the New Medicaid Rules",
-        "date": "2026-07-22",
-        "url": "https://codeforamerica.org/news/helping-states-respond-to-the-new-medicaid-rules/"
       }
-    ],
-    "events": []
-  },
-  "network": {
-    "funders": [],
-    "memberships": []
+    ]
   },
   "meta": {
     "input": "Code for America",
     "resolved_url": "https://www.codeforamerica.org/",
     "resolution_method": "llm_guess_verified",
-    "crawled_at": "2026-09-22T19:44:37+00:00",
+    "crawled_at": "2026-09-22T22:08:03+00:00",
     "pages_crawled": [
       {
         "url": "https://www.codeforamerica.org/",
@@ -144,12 +123,6 @@
         "type": "html",
         "method": "browser",
         "chars": 2436
-      },
-      {
-        "url": "https://files.codeforamerica.org/2023/12/11142153/irs-form-990-2022.pdf",
-        "type": "pdf",
-        "method": "http",
-        "chars": 15000
       },
       {
         "url": "https://files.codeforamerica.org/2024/12/19091011/irs-form-990-2023-public.pdf",
@@ -170,12 +143,6 @@
         "chars": 1394
       },
       {
-        "url": "https://codeforamerica.org/about-us/our-team/",
-        "type": "html",
-        "method": "browser",
-        "chars": 1649
-      },
-      {
         "url": "https://codeforamerica.org/feed/",
         "type": "rss",
         "method": "http",
@@ -185,41 +152,34 @@
     "failed_pages": [],
     "field_sources": {
       "organization": [
-        "https://files.codeforamerica.org/2023/12/11142153/irs-form-990-2022.pdf",
-        "https://files.codeforamerica.org/2024/12/19091011/irs-form-990-2023-public.pdf",
-        "https://codeforamerica.org/about-us/"
-      ],
-      "fit": [
-        "https://codeforamerica.org/about-us/",
-        "https://codeforamerica.org/programs/",
-        "https://files.codeforamerica.org/2023/12/11142153/irs-form-990-2022.pdf",
         "https://files.codeforamerica.org/2024/12/19091011/irs-form-990-2023-public.pdf"
       ],
+      "fit": [
+        "https://files.codeforamerica.org/2024/12/19091011/irs-form-990-2023-public.pdf",
+        "https://codeforamerica.org/about-us/",
+        "https://codeforamerica.org/programs/"
+      ],
       "financials": [
-        "https://codeforamerica.org/about-us/financials/",
-        "https://files.codeforamerica.org/2023/12/11142153/irs-form-990-2022.pdf",
         "https://files.codeforamerica.org/2024/12/19091011/irs-form-990-2023-public.pdf"
       ],
       "contacts": [
-        "https://files.codeforamerica.org/2023/12/11142153/irs-form-990-2022.pdf",
-        "https://codeforamerica.org/about-us/our-team/"
+        "https://files.codeforamerica.org/2024/12/19091011/irs-form-990-2023-public.pdf"
       ],
       "timing": [
-        "https://www.codeforamerica.org/",
         "site news feed"
       ]
     },
     "tokens": {
       "claude-haiku-4-5": {
-        "input": 1677,
-        "output": 170
+        "input": 1630,
+        "output": 138
       },
       "claude-sonnet-5": {
-        "input": 22047,
-        "output": 5164
+        "input": 13194,
+        "output": 780
       }
     },
-    "cost_usd": 0.098261,
+    "cost_usd": 0.036508,
     "warnings": []
   }
 }

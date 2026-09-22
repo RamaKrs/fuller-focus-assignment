@@ -39,13 +39,15 @@ earns its place by answering one of them:
 | Question | Fields |
 |---|---|
 | **Is this a good fit?** | mission, programs, cause area, geographic scope |
-| **Can they afford it?** | multi-year revenue/expenses/assets, growth rate, size bucket, employee count |
-| **Who do I contact?** | named leaders with titles, email, phone, contact page |
-| **Why reach out now?** | open roles, executive searches, RFPs, leadership changes, capital projects, active campaigns, recent news, upcoming events |
+| **Can they afford it?** | multi-year revenue/expenses/assets, growth rate, size bucket, employee count, auditor firm |
+| **Who do I contact?** | named leaders with titles, phone |
+| **Why reach out now?** | leadership changes, active campaign, recent news |
 
-The last group is the one that turns a list into a pipeline. A nonprofit that
-just opened an executive search, launched a capital campaign or posted an RFP
-is in a buying window; the same nonprofit six months later is not.
+The schema was **cut down after measuring it**, not designed once and left. The
+first version had forty fields; six of them came back empty on every
+organisation in the test set and were costing tokens and a page slot each. §8
+has the numbers and §7 the reasoning. What survives is what the test set showed
+actually arrives.
 
 **Positioning.** Fuller Focus's own database is built largely from *external*
 sources — IRS filings, executive-search firms, building permits, foundation
@@ -141,8 +143,8 @@ publication dates, no model needed.
 URLs** — it cannot invent a page that way, and the reply costs a fraction of
 the output tokens. Two failures fall back to a deterministic keyword picker.
 
-**Financial documents are not left to the model.** Two of the six page slots
-are reserved for annual reports, 990s and financial statements, selected by
+**Financial documents are not left to the model.** One of the four page slots
+is reserved for annual reports, 990s and financial statements, selected by
 keyword scoring in code. Report PDFs linked from a fetched page are followed
 one level down — which is the only way to reach them in practice:
 `feedingamerica.org`'s homepage has **zero** PDF links, while its financials
@@ -216,91 +218,118 @@ Design decisions worth calling out:
 - **`field_sources` on every group.** Each block of fields carries the URLs it
   came from, so any claim in the profile can be checked against the page that
   produced it. For a sales dataset this is the difference between usable and
-  merely plausible.
+  merely plausible. The model returns *source numbers*, not URLs — echoing a
+  137-character CDN link back ten times per profile was about a fifth of the
+  reply — and code expands them to URLs in the saved file.
 - **Computed fields are separated from extracted ones.** The extraction model
-  is never shown `size_bucket`, `revenue_growth_pct`, `executive_search_open`
-  or the NTEE code — they're absent from its schema, so it cannot guess at
-  values that code owns.
+  is never shown `size_bucket`, `revenue_growth_pct` or the NTEE code —
+  they're absent from its schema, so it cannot guess at values code owns.
 - **`meta` records how the profile was built** — pages crawled with method and
   size, pages that failed with the reason, tokens, cost, warnings. A profile
   that's thin because a site blocked us is a different thing from one that's
   thin because the organisation publishes nothing, and the record says which.
 
-**Deliberately excluded:** full board rosters, donation-page mechanics, impact
-statistics, social media follower counts, tech stack. Each is either low value
-to a seller, or cheaper to get from a dedicated source than by burning a page
-slot on it. Tech-stack detection is a good future addition precisely because it
-costs no tokens — it's a header and HTML-pattern check (§11).
+**Excluded by design:** full board rosters, donation-page mechanics, impact
+statistics, social media follower counts, tech stack — each is either low value
+to a seller or cheaper from a dedicated source than a page slot here.
+
+**Excluded after measuring**, which is the more interesting list. These were in
+the first version and were cut because the test set showed them arriving empty:
+
+| Field | Filled | Why it was cut |
+|---|---|---|
+| `open_roles` | 0/5 | jobs live in JS job-board APIs on another domain |
+| `rfps` | 0/5 | rarely on a nonprofit's own site; procurement portals have them |
+| `email` | 0/5 | obfuscated against scrapers almost everywhere |
+| `contact_url` | 0/5 | low value once you have named leaders and a phone number |
+| `memberships` | 0/5 | mentioned in prose, never structured |
+| `events` | 1/5 | usually a JS calendar widget |
+| `funders` | 1/5 | logo walls, i.e. images, not text |
+| `capital_projects` | 1/5 | only ever appeared inside annual-report narrative |
+
+Cutting these removed two page slots as well as the fields themselves, since
+careers and partners pages no longer needed crawling. That is most of the 57%
+saving in §8 — **the cheapest token is the one you never had a reason to
+spend.**
 
 ## 8. Cost, scale and feasibility
 
 All figures below are **measured**, from the five-organisation run committed in
-`examples/` — taken from each profile's own `meta.tokens` and `meta.cost_usd`,
-not estimated.
+`examples/` — taken from each profile's own `meta.tokens` and `meta.cost_usd`.
 
-| Organisation | Cost | Haiku in/out | Sonnet in/out | Pages | PDFs | Browser |
-|---|---:|---:|---:|---:|---:|---:|
-| charity: water | $0.1089 | 4,467 / 153 | 16,140 / 7,143 | 7 | 2 | 0 |
-| Code for America | $0.0983 | 1,677 / 170 | 22,047 / 5,164 | 8 | 2 | 5 |
-| Feeding America | $0.0757 | 5,905 / 143 | 21,766 / 2,553 | 7 | 2 | 0 |
-| Khan Academy | $0.0645 | 5,015 / 172 | 17,385 / 2,388 | 8 | 0 | 1 |
-| The Trussell Trust | $0.0709 | 6,434 / 168 | 14,029 / 3,559 | 6 | 1 | 0 |
-| **Mean** | **$0.0837** | 4,699 / 161 | 18,273 / 4,161 | 7.2 | 1.4 | 1.2 |
+| Organisation | Cost | Haiku in/out | Sonnet in/out | Pages | PDFs |
+|---|---:|---:|---:|---:|---:|
+| charity: water | $0.0367 | 4,422 / 115 | 12,591 / 656 | 5 | 1 |
+| Code for America | $0.0365 | 1,630 / 138 | 13,194 / 780 | 6 | 1 |
+| Feeding America | $0.0384 | 5,875 / 132 | 13,082 / 571 | 5 | 1 |
+| Khan Academy | $0.0269 | 4,984 / 136 | 7,311 / 661 | 6 | 0 |
+| The Trussell Trust | $0.0396 | 6,371 / 123 | 12,214 / 817 | 5 | 1 |
+| **Mean** | **$0.0356** | 4,656 / 128 | 11,678 / 697 | 5.4 | 0.8 |
 
-**Where the money goes.** Haiku is **7%** of the bill and Sonnet **93%**.
-Within Sonnet the split is input $0.183 / output $0.208 — **output is the
-larger half**, which is easy to miss when estimating, since the schema is big
-and a well-populated profile is a lot of JSON.
+**Where the money goes now:** Sonnet input 66%, Haiku 15%, Sonnet output 20%.
+Input dominates, so the remaining levers are about sending fewer and smaller
+documents — not about the reply.
 
-**Non-token costs per organisation:** ~7.2 HTTP requests plus robots/sitemap/
-feed probes, 1.4 PDFs downloaded, and **17% of pages rendered in headless
-Chromium** — a second or two of real CPU each, and by far the most expensive
-thing here that isn't tokens.
+**Non-token costs per organisation:** ~5.4 HTTP requests plus robots/sitemap/
+feed probes, 0.8 PDFs, and **19% of pages rendered in headless Chromium** — a
+second or two of real CPU each, and the most expensive thing here that isn't
+tokens.
+
+### How it got here: $0.0837 → $0.0356
+
+The first working version cost **$0.0837** per organisation. Two changes cut it
+by **57%** with no measurable loss — leaders, programmes and fiscal years all
+came back identical across the test set (20, 20 and 22 respectively).
+
+| Change | Effect |
+|---|---|
+| **`effort: low` on extraction** | Sonnet 5 thinks by default and thinking is billed as output. It was **76% of output tokens** and made results no better — on charity: water, 5,197 output tokens against 1,266, where the *cheaper* run found one more fiscal year. |
+| **Cutting eight empty fields** (§7) | Removed two page slots as well as the fields, taking `MAX_PAGES` from 6 to 4. Sonnet input fell 18,273 → 11,678. |
+| **Source numbers instead of URLs** in `field_sources` | ~20% of the reply was echoed CDN links. |
+| **Terser field wording** | Programme descriptions capped at 15 words. |
+
+Output tokens per organisation fell from 4,161 to 697 — **83%** — and the
+schema sent in the prompt shrank from 7,381 to 4,972 characters.
+
+One lesson worth stating plainly: **the default settings were the problem, not
+the architecture.** Nobody asks for thinking tokens on a JSON extraction task,
+and nobody notices paying for them either.
 
 ### At 500,000 organisations
 
 | Scenario | Cost |
 |---|---|
-| One full pass, as built | **~$41,800** |
-| Full pass via the Batch API (50%) | ~$20,900 |
-| Quarterly refresh of everything | ~$167,000/yr |
-| Tiered refresh (below) | **~$25,000/yr** |
+| One full pass, as built | **~$17,800** |
+| Full pass via the Batch API (50%) | **~$8,900** |
+| Quarterly refresh of everything | ~$71,000/yr |
+| Tiered refresh (below) | **~$12,000/yr** |
 
-Compute alone: 500k × 7.2 ≈ **3.6M HTTP requests** and ~**600k browser
-renders** per pass. At that volume the crawl needs per-domain rate limiting and
-a scheduler far more than it needs a cheaper model.
+Compute: 500k × 5.4 ≈ **2.7M HTTP requests** and ~**500k browser renders** per
+pass. At that volume the crawl needs per-domain rate limiting and a scheduler
+more than it needs a cheaper model.
 
-### What I'd change to bring it down
+### What I'd change next
 
-Ordered by measured impact:
+Now that input dominates, the order has changed:
 
 1. **Batch API — ~50% off, no quality cost.** This work is not
-   latency-sensitive. Nothing else on this list is as close to free.
-2. **Tiered refresh, ~80% off steady state.** The fields have completely
-   different half-lives. Mission, programs and cause area change yearly;
-   financials annually, on a filing schedule we can predict; news, jobs and
-   events weekly. Re-extracting a whole profile to learn about one new job
-   posting is the single biggest waste in the current design. Re-crawl on
-   content hash, `Last-Modified` and sitemap `lastmod`, and only re-run the
-   sections whose sources actually changed.
-3. **Shrink the output.** Output is 53% of the Sonnet bill and the schema
-   invites verbosity — programme descriptions came back as full sentences when
-   a phrase would do. Tighter limits and an instruction to omit empty sections
-   should cut output materially. This is the cheapest unexplored win.
-4. **Drop 990 PDFs where IRS data already covers the year.** PDFs are ~45% of
-   extraction input. Measured caveat: ProPublica **lags** — for both US test
-   organisations the most recent filing exists there only as a PDF with no
-   structured figures, so this saves money only for settled years, not the
-   current one, which is the year a seller cares about most.
-5. **Prompt caching** on the fixed system prompt and schema — about 1,850 of
-   18,273 input tokens (~10%) are identical on every call. Real but smaller
-   than it first appears, because the documents dominate.
-6. **Haiku for simple organisations.** Khan Academy has no PDFs and cost
-   $0.0645; sites with no financial documents may not need Sonnet at all.
-   Route on whether a PDF was retrieved.
-7. **IRS bulk data instead of per-organisation API calls** — no tokens either
-   way, but it removes a network round trip and a third-party dependency from
-   the hot path.
+   latency-sensitive. Nothing else is as close to free.
+2. **Tiered refresh, ~80% off steady state.** The fields have different
+   half-lives: mission, programmes and cause area change yearly; financials
+   annually on a predictable filing schedule; news weekly. Re-extracting a
+   whole profile to learn one headline is the biggest remaining waste. Re-crawl
+   on content hash, `Last-Modified` and sitemap `lastmod`.
+3. **Prompt caching** — ~1,400 of 11,678 input tokens (12%) are now the fixed
+   system prompt and schema, identical on every call.
+4. **Trim the documents, not just the schema.** 11,678 input tokens is still
+   the bulk of the bill, and a 990 PDF contributes text we mostly discard.
+   Extracting only the marked financial pages, rather than head pages plus
+   markers, is the obvious next measurement.
+5. **Haiku for organisations with no PDF.** Khan Academy has none and already
+   costs $0.0269; it may not need Sonnet at all. Route on whether a financial
+   document was retrieved.
+6. **IRS bulk data instead of per-organisation API calls** — no tokens either
+   way, but it removes a round trip and a third-party dependency.
 
 ## 9. Categorisation (bonus)
 
@@ -354,12 +383,21 @@ sampling in point 4 would surface.
   fails silently and looks plausible. An EIN printed on the site is used
   directly when available and is far more reliable: charity: water's legal name
   is "Charity Global Inc", which no name match would ever have found.
-- **Six pages per organisation is a real constraint.** When a site has several
-  financial documents, they take slots from leadership and news pages. Feeding
-  America's profile has one named leader for this reason.
-- **Jobs pages are usually a JS-rendered third-party board** (Greenhouse,
-  Lever) on a different domain, so `open_roles` is frequently empty — a
-  weakness in exactly the field a seller most wants.
+- **Four pages per organisation is a real constraint**, and a deliberate one —
+  it is most of why a profile costs 3.6 cents. When a site has several
+  financial documents they take slots from leadership and news pages.
+- **`open_roles` was removed from the schema**, not because job postings don't
+  matter — they are the strongest buying signal there is — but because they
+  came back empty on 5/5 organisations. Jobs live in JavaScript-rendered
+  third-party boards (Greenhouse, Lever, Workday) on another domain, so the
+  field cost a page slot and returned nothing. Reading those boards' JSON APIs
+  directly would restore it at no token cost, and is the first thing I'd
+  build next (§11).
+- **`campaign` is currently 0/5** and on probation. It survived the cut on the
+  argument that a named campaign is a strong buying signal, but the one
+  instance the old schema found came from an annual report that the tighter
+  page budget no longer fetches. Either it earns its place on a larger sample
+  or it follows `open_roles` out.
 - **Extraction varies between runs.** The same PDFs produced FY2025 revenue of
   $82,267,852 on one run and $90,800,000 on another for charity: water. This is
   why IRS data is preferred where it exists, and why `field_sources` matters.
@@ -397,16 +435,15 @@ sampling in point 4 would surface.
 
 ## 12. What I spent
 
-**About $1.55 of Claude API usage in total**, summed from the per-run cost that
-every run prints. Roughly half of that is the committed test-set runs
-(~$0.83 across two full passes); the rest is development — debugging stages
-individually, and re-running organisations after each fix.
+**About $2.10 of Claude API usage in total**, summed from the per-run cost that
+every run prints. Roughly half is committed test-set runs (four full passes as
+the schema was measured and cut); the rest is development.
 
-Build time was roughly five hours, in the assignment's 2–6 hour range.
+Build time was roughly six hours.
 
 ### What the test set actually produced
 
-Field coverage across the five organisations:
+Field coverage across the five organisations, after the cut:
 
 | Field | Coverage | |
 |---|---|---|
@@ -415,26 +452,23 @@ Field coverage across the five organisations:
 | named leaders | 5/5 | |
 | cause area from IRS NTEE | 4/5 | the fifth is UK, so no IRS record |
 | EIN | 3/5 | |
-| phone or email | 3/5 | |
+| phone | 3/5 | |
 | auditor firm | 3/5 | from the PDFs — not available anywhere else |
 | recent news | 2/5 | |
-| events | 1/5 | |
-| active campaign | 1/5 | |
-| **open roles** | **0/5** | see limitations |
+| campaign | 0/5 | on probation, see limitations |
 
-One failed page across 36 fetched (a scanned PDF with no text layer), and no
-failed organisations.
+No failed pages across 27 fetched, and no failed organisations.
 
-**The honest weak spot is `open_roles` at 0/5.** Jobs pages are almost always a
-JavaScript-rendered third-party board on another domain, and it's the field a
-seller would most want. Reading Greenhouse/Lever/Workday JSON APIs directly
-would fix it properly, and is top of §11 for a reason.
+The cut cost nothing measurable: leaders (20), programmes (20) and fiscal years
+(22) are identical to the pre-cut run. Recent news fell from 10 to 6 items,
+which is the per-organisation cap moving from 5 to 3, not a retrieval loss.
 
 Two results worth flagging as the payoff for forcing financial documents:
 
-- **Feeding America**: 5 fiscal years, 2020–2024, from two Form 990 PDFs merged
-  with ProPublica — plus auditor RSM US LLP and 421 employees, neither of which
-  is in the IRS structured data.
+- **Feeding America**: 5 fiscal years, from ProPublica's IRS filings merged
+  with the 2024 Form 990 published on their own site — the year ProPublica
+  holds only as a PDF — plus auditor RSM US LLP and 421 employees, neither of
+  which is in the IRS structured data at all.
 - **The Trussell Trust**: a UK charity with no IRS record at all, yet two years
   of financials (£62.8M and £54.1M) read out of a **150-page** annual report
   whose accounts begin on page 101.
