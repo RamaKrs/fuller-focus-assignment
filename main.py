@@ -91,6 +91,18 @@ MIN_HOME_LINKS = 10          # below this, the homepage is JS-rendered
 MAX_DOWNLOAD_BYTES = 10_000_000   # hard cap on any single response body
 MAX_SITEMAPS = 5                  # child sitemaps read from a sitemap index
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+# Statuses that usually mean bot protection rather than a missing page. A
+# real browser often gets through where a plain HTTP client does not.
+BLOCKED_STATUS = frozenset({401, 403, 406, 429, 503})
+
+# Legal suffixes stripped before searching ProPublica. Its search endpoint
+# returns 404 for some queries carrying them: "Code for America Labs, Inc."
+# and "Code for America Labs Inc" both fail where "Code for America Labs"
+# returns the right organisation.
+LEGAL_SUFFIXES = frozenset({
+    "inc", "incorporated", "llc", "llp", "ltd", "limited", "corp",
+    "corporation", "co", "plc", "pbc",
+})
 
 # Query parameters stripped during normalisation, so one page isn't fetched
 # (or shown to the model) twice under different tracking tags.
@@ -582,6 +594,34 @@ def fetch(url: str) -> dict[str, Any]:
     return {"ok": False, "url": url, "error": last_error}
 
 
+def fetch_or_render(url: str, use_browser: bool = True) -> dict[str, Any]:
+    """fetch(), falling back to a real browser when a page looks bot-blocked.
+
+    codeforamerica.org answers a plain HTTP client with 403 on every page,
+    homepage included, but serves headless Chromium normally.
+    """
+    result = fetch(url)
+    if result["ok"]:
+        return result
+    blocked = any(result["error"] == f"HTTP {status}" for status in BLOCKED_STATUS)
+    is_pdf = urlsplit(url.lower()).path.endswith(".pdf")
+    if not (blocked and use_browser) or is_pdf:
+        return result
+
+    log.info("%s on %s, retrying with a browser", result["error"], url)
+    try:
+        html = render_with_browser(url)
+    except Exception as exc:
+        return {
+            "ok": False, "url": url,
+            "error": f"{result['error']} and browser retry failed: {exc}",
+        }
+    return {
+        "ok": True, "url": url, "content": html.encode("utf-8"),
+        "content_type": "text/html", "truncated": False, "rendered": True,
+    }
+
+
 @lru_cache(maxsize=64)
 def _robots(origin: str) -> robotparser.RobotFileParser | None:
     """Parsed robots.txt for one origin, or None if there isn't a usable one."""
@@ -649,23 +689,134 @@ def normalise_url(value: str) -> str:
     )
 
 
+class UrlGuess(BaseModel):
+    """The cheap model's guess at an organisation's official website."""
+
+    url: str | None
+    confidence: Literal["high", "medium", "low"]
+
+
+GUESS_URL_SYSTEM = """\
+Give the official website of the nonprofit organisation named by the user.
+
+- Return the organisation's own homepage, not a directory listing, a news
+  article, a social media profile, a donation platform or a Wikipedia page.
+- If you are not confident the organisation exists, or you do not know its
+  website, return null for the url. A null is more useful than a guess.
+- confidence: 'high' if you are sure, 'medium' if the name is ambiguous or
+  several organisations share it, 'low' if you are mostly guessing.
+"""
+
+
 def guess_url_from_name(name: str) -> dict[str, Any]:
     """Ask the cheap model for the org's official URL and a confidence level."""
-    raise NotImplementedError
+    try:
+        response = client().messages.parse(
+            model=LINK_MODEL,
+            max_tokens=200,
+            system=GUESS_URL_SYSTEM,
+            messages=[{"role": "user", "content": name}],
+            output_format=UrlGuess,
+        )
+        record_usage(
+            LINK_MODEL, response.usage.input_tokens, response.usage.output_tokens
+        )
+        guess = response.parsed_output
+        if guess is None:
+            return {"url": None, "confidence": "low"}
+        return {"url": guess.url, "confidence": guess.confidence}
+    except Exception as exc:
+        log.warning("URL guess failed: %s", exc)
+        return {"url": None, "confidence": "low"}
 
 
-def verify_url_matches_name(name: str, url: str, html: str) -> bool:
-    """Fuzzy-match the org name against the page title and leading text."""
-    raise NotImplementedError
+def verify_url_matches_name(
+    name: str, url: str, html: str, also_check: tuple[str, ...] = ()
+) -> float:
+    """How well a page looks like it belongs to `name`, 0-100.
+
+    Checked three ways because any one of them can be unhelpful on its own:
+    the <title>, the start of the page text, and the domain itself (a site
+    whose title is just "Home" often still has the name in the URL).
+
+    A verification step is the whole point of letting a model guess a URL -
+    without it a confident wrong answer becomes a confident wrong profile.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    text_head = html_to_text(html, url)[:2000]
+
+    name_compact = re.sub(r"[^a-z0-9]", "", name.lower())
+    scores = [
+        fuzz.token_set_ratio(name.lower(), title.lower()) if title else 0.0,
+        fuzz.token_set_ratio(name.lower(), text_head.lower()) if text_head else 0.0,
+    ]
+    # Every domain in the chain counts, not just the final one. A rebrand
+    # redirects an old name-matching domain to a new one: trusselltrust.org
+    # now serves trussell.org.uk, and only the original domain still carries
+    # the name we were given.
+    for candidate in (url, *also_check):
+        domain = registrable_domain(urlsplit(candidate).netloc).rsplit(".", 1)[0]
+        domain_compact = re.sub(r"[^a-z0-9]", "", domain)
+        if name_compact and domain_compact:
+            scores.append(fuzz.ratio(name_compact, domain_compact))
+            # Also allow the name to contain the domain ("the trussell trust"
+            # against "trusselltrust"), which a plain ratio penalises.
+            scores.append(fuzz.partial_ratio(domain_compact, name_compact))
+    log.debug("verification scores for %s: title/text/domain = %s", url, scores)
+    return max(scores)
 
 
-def resolve_input(value: str) -> dict[str, Any]:
-    """Turn a name or URL into {"url", "resolution_method"} or raise."""
+class ResolutionError(RuntimeError):
+    """The input could not be turned into a verified organisation website."""
+
+
+def resolve_input(value: str, use_browser: bool = True) -> dict[str, Any]:
+    """Turn a name or URL into a verified homepage.
+
+    Returns {"url", "resolution_method", "home"} where `home` is an already
+    fetched homepage when resolution needed one, so a verified name lookup
+    does not pay for a second download.
+    """
+    value = value.strip()
     if looks_like_url(value):
-        return {"url": normalise_url(value), "resolution_method": "url_given"}
-    raise NotImplementedError(
-        "name resolution lands in milestone 7 — pass a URL for now"
+        return {
+            "url": normalise_url(value),
+            "resolution_method": "url_given",
+            "home": None,
+        }
+
+    guess = guess_url_from_name(value)
+    if not guess["url"]:
+        raise ResolutionError(
+            f"Could not find a website for {value!r}. Please pass the URL directly."
+        )
+
+    url = normalise_url(guess["url"])
+    log.info("guessed %s for %r (confidence %s)", url, value, guess["confidence"])
+    home = fetch_homepage(url, use_browser=use_browser)
+    if not home["ok"]:
+        raise ResolutionError(
+            f"Could not verify website for {value!r}: {url} did not load "
+            f"({home['error']}). Please pass the URL directly."
+        )
+
+    score = verify_url_matches_name(
+        value, home["url"], home["html"], also_check=(url,)
     )
+    if score < URL_VERIFY_THRESHOLD:
+        raise ResolutionError(
+            f"Could not verify website for {value!r}: {home['url']} does not "
+            f"look like it (match {score:.0f} of {URL_VERIFY_THRESHOLD} needed). "
+            "Please pass the URL directly."
+        )
+
+    log.info("verified %s for %r (match %.0f)", home["url"], value, score)
+    return {
+        "url": home["url"],
+        "resolution_method": "llm_guess_verified",
+        "home": home,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1094,9 +1245,9 @@ def _parse_document(
         }
 
     html = result["content"].decode("utf-8", "replace")
-    method = "http"
+    method = "browser" if result.get("rendered") else "http"
     text = html_to_text(html, url, keep_footer=picked.get("is_home", False))
-    if len(text) < MIN_TEXT_CHARS and use_browser:
+    if len(text) < MIN_TEXT_CHARS and use_browser and method == "http":
         log.info("thin page (%d chars), rendering with browser: %s", len(text), url)
         try:
             html = render_with_browser(url)
@@ -1118,13 +1269,15 @@ def fetch_homepage(url: str, use_browser: bool = True) -> dict[str, Any]:
     and 232 once rendered. Discovering links from the un-rendered page finds
     nothing worth reading.
     """
-    result = fetch(url)
+    result = fetch_or_render(url, use_browser=use_browser)
     if not result["ok"]:
         return {"ok": False, "url": url, "error": result["error"]}
 
     final_url = result["url"]
     html = result["content"].decode("utf-8", "replace")
-    method = "http"
+    method = "browser" if result.get("rendered") else "http"
+    if method == "browser":
+        return {"ok": True, "url": final_url, "html": html, "method": method}
     link_count = len(extract_links(html, final_url))
     if use_browser and (
         link_count < MIN_HOME_LINKS
@@ -1185,7 +1338,7 @@ def collect_documents(
             log.info("robots.txt disallows %s", url)
             failed.append({"url": url, "error": "disallowed by robots.txt"})
             continue
-        result = fetch(url)
+        result = fetch_or_render(url, use_browser=use_browser)
         fetched += 1
         if not result["ok"]:
             log.warning("skipping %s: %s", url, result["error"])
@@ -1638,17 +1791,46 @@ def digits_only(ein: str | None) -> str | None:
     return digits if len(digits) == 9 else None
 
 
+def search_variants(name: str) -> list[str]:
+    """Query forms to try against ProPublica, simplest-likely-to-work first."""
+    cleaned = " ".join(re.sub(r"[^\w\s&-]", " ", name).split())
+    words = cleaned.split()
+    while words and words[-1].lower().strip(".") in LEGAL_SUFFIXES:
+        words.pop()
+    variants = [" ".join(words), cleaned, name]
+    if len(words) > 4:
+        variants.insert(1, " ".join(words[:4]))
+    seen: set[str] = set()
+    ordered = []
+    for variant in variants:
+        key = variant.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            ordered.append(variant.strip())
+    return ordered
+
+
 def propublica_search(name: str) -> list[dict[str, Any]]:
     """Search the Nonprofit Explorer by organisation name."""
-    result = fetch(f"{PROPUBLICA_BASE}search.json?q={quote_plus(name)}")
-    if not result["ok"]:
-        log.warning("ProPublica search failed: %s", result["error"])
-        return []
-    try:
-        return json.loads(result["content"]).get("organizations") or []
-    except (json.JSONDecodeError, AttributeError) as exc:
-        log.warning("ProPublica search returned unusable JSON: %s", exc)
-        return []
+    last_error = None
+    for variant in search_variants(name):
+        result = fetch(f"{PROPUBLICA_BASE}search.json?q={quote_plus(variant)}")
+        if not result["ok"]:
+            last_error = result["error"]
+            log.debug("ProPublica search %r: %s", variant, result["error"])
+            continue
+        try:
+            organizations = json.loads(result["content"]).get("organizations") or []
+        except (json.JSONDecodeError, AttributeError) as exc:
+            log.warning("ProPublica search returned unusable JSON: %s", exc)
+            continue
+        if organizations:
+            if variant != name:
+                log.debug("ProPublica matched on simplified query %r", variant)
+            return organizations
+    if last_error:
+        log.warning("ProPublica search failed: %s", last_error)
+    return []
 
 
 def propublica_organization(ein: str) -> dict[str, Any] | None:
@@ -1899,13 +2081,81 @@ def write_json(profile: NonprofitProfile) -> Path:
 
 
 def profile_to_row(profile: NonprofitProfile) -> dict[str, Any]:
-    """Flatten one profile into a CSV row (lists become counts or joins)."""
-    raise NotImplementedError
+    """Flatten one profile into a CSV row.
+
+    Lists collapse to counts or short joins: the row is for filtering and
+    sorting in a CRM or a spreadsheet, and the JSON keeps everything.
+    """
+    newest = latest_year(profile.financials.years)
+    leader = profile.contacts.leaders[0] if profile.contacts.leaders else None
+    news = profile.timing.recent_news[0] if profile.timing.recent_news else None
+    campaign = profile.buying_signals.campaign
+    return {
+        "name": profile.organization.name,
+        "website": profile.organization.website,
+        "country": profile.organization.country,
+        "hq_city": profile.organization.hq_city,
+        "ein": profile.organization.ein,
+        "cause_area": profile.fit.cause_area.major_group,
+        "geographic_scope": profile.fit.geographic_scope,
+        "size_bucket": profile.financials.size_bucket,
+        "latest_revenue": newest.revenue if newest else None,
+        "latest_fiscal_year": newest.fiscal_year if newest else None,
+        "revenue_growth_pct": profile.financials.revenue_growth_pct,
+        "mission": profile.fit.mission,
+        "num_programs": len(profile.fit.programs),
+        "top_leader_name": leader.name if leader else None,
+        "top_leader_title": leader.title if leader else None,
+        "email": profile.contacts.email,
+        "phone": profile.contacts.phone,
+        "num_open_roles": len(profile.buying_signals.open_roles),
+        "executive_search_open": profile.buying_signals.executive_search_open,
+        "num_rfps": len(profile.buying_signals.rfps),
+        "has_leadership_change": bool(profile.buying_signals.leadership_changes),
+        "has_active_campaign": bool(campaign and campaign.status == "active"),
+        "campaign_name": campaign.name if campaign else None,
+        "num_events": len(profile.timing.events),
+        "latest_news_title": news.title if news else None,
+        "latest_news_date": news.date if news else None,
+        "funders": "; ".join(funder.name for funder in profile.network.funders),
+        "memberships": "; ".join(profile.network.memberships),
+        "auditor_firm": profile.financials.auditor_firm,
+        "crawled_at": profile.meta.crawled_at,
+        "cost_usd": profile.meta.cost_usd,
+        "num_warnings": len(profile.meta.warnings),
+    }
 
 
-def rebuild_combined_csv() -> Path:
-    """Rebuild output/combined.csv from every JSON file in output/."""
-    raise NotImplementedError
+def load_profiles() -> list[NonprofitProfile]:
+    """Every profile currently in output/, skipping anything unreadable."""
+    profiles: list[NonprofitProfile] = []
+    for path in sorted(OUTPUT_DIR.glob("*.json")):
+        try:
+            profiles.append(
+                NonprofitProfile.model_validate_json(path.read_text(encoding="utf-8"))
+            )
+        except (ValidationError, json.JSONDecodeError, OSError) as exc:
+            log.warning("skipping %s: %s", path.name, exc)
+    return profiles
+
+
+def rebuild_combined_csv() -> Path | None:
+    """Rebuild output/combined.csv from every JSON file in output/.
+
+    Rebuilt from the JSON rather than appended to, so re-running one
+    organisation updates its row instead of duplicating it.
+    """
+    profiles = load_profiles()
+    if not profiles:
+        return None
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    path = OUTPUT_DIR / "combined.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        for profile in sorted(profiles, key=lambda p: p.organization.name.lower()):
+            writer.writerow(profile_to_row(profile))
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -1936,10 +2186,10 @@ def process_org(value: str, use_browser: bool = True) -> NonprofitProfile:
     started_usage = usage_snapshot()
     warnings: list[str] = []
 
-    resolved = resolve_input(value)
+    resolved = resolve_input(value, use_browser=use_browser)
     home_url = resolved["url"]
 
-    home = fetch_homepage(home_url, use_browser=use_browser)
+    home = resolved["home"] or fetch_homepage(home_url, use_browser=use_browser)
     if not home["ok"]:
         raise RuntimeError(f"could not fetch {home_url}: {home['error']}")
     home_url = home["url"]
@@ -2093,27 +2343,115 @@ def main(argv: list[str] | None = None) -> int:
             use_llm=not args.no_llm,
         )
 
-    profile = process_org(args.org, use_browser=not args.no_browser)
-    path = write_json(profile)
-    log.info("wrote %s", path)
-    print(f"\n{profile.organization.name}")
-    print(f"  mission     {(profile.fit.mission or '-')[:90]}")
-    print(f"  programs    {len(profile.fit.programs)}")
-    print(f"  leaders     {len(profile.contacts.leaders)}")
-    print(f"  open roles  {len(profile.buying_signals.open_roles)}")
-    print(f"  news        {len(profile.timing.recent_news)}")
-    print(f"  events      {len(profile.timing.events)}")
-    print(f"  fin. years  {len(profile.financials.years)} "
-          f"(source: {profile.financials.source})")
-    print(f"  size        {profile.financials.size_bucket}"
-          f"   growth {profile.financials.revenue_growth_pct}%")
+    targets = read_targets(args)
+    if targets is None:
+        return 2
+
+    done: list[NonprofitProfile] = []
+    failed: list[tuple[str, str]] = []
+    for position, target in enumerate(targets, start=1):
+        if len(targets) > 1:
+            log.info("[%d/%d] %s", position, len(targets), target)
+        try:
+            profile = process_org(target, use_browser=not args.no_browser)
+        except Exception as exc:
+            # One bad organisation must not end a batch.
+            log.error("%s failed: %s", target, exc)
+            failed.append((target, str(exc)))
+            continue
+        write_json(profile)
+        done.append(profile)
+        if len(targets) == 1:
+            print_profile(profile)
+
+    csv_path = rebuild_combined_csv()
+    print_summary(done, failed, csv_path)
+    return 0 if done else 1
+
+
+def read_targets(args: argparse.Namespace) -> list[str] | None:
+    """The organisations to process, from --batch or the positional argument."""
+    if not args.batch:
+        return [args.org]
+    try:
+        lines = Path(args.batch).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        log.error("could not read %s: %s", args.batch, exc)
+        return None
+    targets = [
+        line.strip() for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not targets:
+        log.error("%s contained no organisations", args.batch)
+        return None
+    return targets
+
+
+def print_profile(profile: NonprofitProfile) -> None:
+    """One organisation's headline numbers."""
+    print(f"\n{profile.organization.name}  ({profile.organization.website})")
+    print(f"  mission     {(profile.fit.mission or '-')[:88]}")
     print(f"  cause       {profile.fit.cause_area.major_group} "
           f"({profile.fit.cause_area.ntee_code or 'no NTEE'}, "
           f"{profile.fit.cause_area.source})")
-    print(f"  warnings    {len(profile.meta.warnings)}")
-    print(f"  tokens      {profile.meta.tokens}")
-    print(f"  cost        ${profile.meta.cost_usd:.4f}\n")
-    return 0
+    print(f"  size        {profile.financials.size_bucket}"
+          f"   growth {profile.financials.revenue_growth_pct}%"
+          f"   ({len(profile.financials.years)} yrs, "
+          f"{profile.financials.source})")
+    print(f"  programs {len(profile.fit.programs)}   "
+          f"leaders {len(profile.contacts.leaders)}   "
+          f"roles {len(profile.buying_signals.open_roles)}   "
+          f"news {len(profile.timing.recent_news)}   "
+          f"events {len(profile.timing.events)}")
+    for warning in profile.meta.warnings:
+        print(f"  warning     {warning}")
+
+
+# Fields worth reporting coverage on: the ones a seller acts on.
+COVERAGE_FIELDS: dict[str, Any] = {
+    "mission": lambda p: bool(p.fit.mission),
+    "ein": lambda p: bool(p.organization.ein),
+    "financials": lambda p: bool(p.financials.years),
+    "cause area": lambda p: p.fit.cause_area.major_group != "Unknown",
+    "leaders": lambda p: bool(p.contacts.leaders),
+    "phone or email": lambda p: bool(p.contacts.phone or p.contacts.email),
+    "open roles": lambda p: bool(p.buying_signals.open_roles),
+    "news": lambda p: bool(p.timing.recent_news),
+    "events": lambda p: bool(p.timing.events),
+}
+
+
+def print_summary(
+    done: list[NonprofitProfile],
+    failed: list[tuple[str, str]],
+    csv_path: Path | None,
+) -> None:
+    """Run totals: coverage, failures and what it cost."""
+    print(f"\n{'-' * 62}")
+    print(f"processed {len(done)}, failed {len(failed)}")
+    for target, error in failed:
+        print(f"  FAILED  {target}: {error[:90]}")
+
+    if done:
+        print("\nfield coverage")
+        for label, present in COVERAGE_FIELDS.items():
+            count = sum(1 for profile in done if present(profile))
+            bar = "#" * count + "." * (len(done) - count)
+            print(f"  {label:<16} {count}/{len(done)}  {bar}")
+
+    if csv_path:
+        print(f"\ncombined csv  {csv_path}")
+    total = usage_cost_usd(USAGE)
+    for model, counts in USAGE.items():
+        print(f"tokens        {model}: {counts['input']:,} in, "
+              f"{counts['output']:,} out")
+    print(f"total cost    ${total:.4f}", end="")
+    if done:
+        print(f"   (${total / len(done):.4f} per organisation)")
+    else:
+        print()
+    print()
 
 
 def show_stage(
