@@ -23,6 +23,9 @@ Sections
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime as dt
+import json
 import gzip
 import logging
 import os
@@ -41,7 +44,7 @@ import pymupdf
 import trafilatura
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 # ---------------------------------------------------------------------------
 # 1. CONFIG & CONSTANTS
@@ -449,21 +452,67 @@ class NonprofitProfile(BaseModel):
     meta: Meta
 
 
+MajorGroup = Literal[
+    "Arts, Culture & Humanities", "Education", "Environment & Animals",
+    "Health", "Human Services", "International, Foreign Affairs",
+    "Public, Societal Benefit", "Religion Related",
+    "Mutual/Membership Benefit", "Unknown",
+]
+
+
+# --- what the extraction model is asked for --------------------------------
+# These mirror the schema above minus every computed field. The model is never
+# shown size_bucket, revenue_growth_pct, executive_search_open or the NTEE
+# code, so it cannot guess at values that code owns.
+
+
+class OrganizationExtract(BaseModel):
+    name: str
+    country: str | None = None
+    hq_city: str | None = None
+    ein: str | None = None
+    year_founded: int | None = None
+
+
+class FitExtract(BaseModel):
+    mission: str | None = None
+    programs: list[Program] = Field(default_factory=list)
+    cause_area: MajorGroup = "Unknown"
+    geographic_scope: GeographicScope | None = None
+
+
+class FinancialsExtract(BaseModel):
+    years: list[FinancialYear] = Field(default_factory=list)
+    employee_count: int | None = None
+    auditor_firm: str | None = None
+
+
+class BuyingSignalsExtract(BaseModel):
+    open_roles: list[OpenRole] = Field(default_factory=list)
+    rfps: list[RFP] = Field(default_factory=list)
+    leadership_changes: list[LeadershipChange] = Field(default_factory=list)
+    capital_projects: list[CapitalProject] = Field(default_factory=list)
+    campaign: Campaign | None = None
+
+
+class FieldSource(BaseModel):
+    """Which pages a group of fields was read from."""
+
+    group: str
+    urls: list[str] = Field(default_factory=list)
+
+
 class ExtractionResult(BaseModel):
-    """The subset of the schema the extraction model is asked to fill in.
+    """The subset of the schema the extraction model is asked to fill in."""
 
-    Computed fields (size bucket, growth, executive flag, NTEE mapping) are
-    deliberately absent — code owns those, not the LLM.
-    """
-
-    organization: Organization
-    fit: Fit = Field(default_factory=Fit)
-    financials: Financials = Field(default_factory=Financials)
+    organization: OrganizationExtract
+    fit: FitExtract = Field(default_factory=FitExtract)
+    financials: FinancialsExtract = Field(default_factory=FinancialsExtract)
     contacts: Contacts = Field(default_factory=Contacts)
-    buying_signals: BuyingSignals = Field(default_factory=BuyingSignals)
+    buying_signals: BuyingSignalsExtract = Field(default_factory=BuyingSignalsExtract)
     timing: Timing = Field(default_factory=Timing)
     network: Network = Field(default_factory=Network)
-    field_sources: dict[str, list[str]] = Field(default_factory=dict)
+    field_sources: list[FieldSource] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +658,11 @@ def verify_url_matches_name(name: str, url: str, html: str) -> bool:
 
 def resolve_input(value: str) -> dict[str, Any]:
     """Turn a name or URL into {"url", "resolution_method"} or raise."""
-    raise NotImplementedError
+    if looks_like_url(value):
+        return {"url": normalise_url(value), "resolution_method": "url_given"}
+    raise NotImplementedError(
+        "name resolution lands in milestone 7 — pass a URL for now"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1349,9 +1402,216 @@ def pick_links(
     return pick_links_by_keyword(candidates)[:limit]
 
 
-def extract(documents: list[dict[str, Any]], feed_items: list[dict[str, Any]]) -> ExtractionResult:
-    """LLM call #2: read the documents and fill in the schema."""
-    raise NotImplementedError
+EXTRACT_SYSTEM = """\
+You read pages from a nonprofit's website and fill in a structured profile.
+The profile is used by a company deciding whether to sell services to this
+nonprofit, so accuracy matters more than completeness.
+
+Rules:
+- Use ONLY information present in the provided text. Never guess, and never
+  use anything you know about this organisation from elsewhere.
+- If a field is not in the text, return null, or an empty list. An empty
+  field is correct; an invented one is not.
+- Dates: ISO format (YYYY-MM-DD, or YYYY-MM, or YYYY) when the text makes
+  that unambiguous. Otherwise keep the original wording.
+- Money: plain numbers, no currency symbols or thousands separators. Take
+  figures from the most recent fiscal year you can identify.
+- leadership_changes: only explicit statements - a new chief executive
+  appointed, a director retiring, a search under way. Do not infer a change
+  from a staff list.
+- campaign: a named fundraising campaign with a goal or a total raised. One
+  campaign object, or null. Do not treat a general donate button as one.
+- open_roles: only actual job postings. seniority 'executive' means C-suite,
+  chief officer, executive director, president or vice-president.
+- recent_news: dated news or press items the organisation published. Prefer
+  the news feed and news pages. Do not turn annual-report highlights or
+  undated achievements into news items.
+- contact_url: a page whose purpose is contacting the organisation. A careers
+  or donate page is not a contact page - use null instead.
+- cause_area: choose the single closest major group from the allowed values.
+- field_sources: for each group you filled in, list the source URLs the
+  information came from, copying each URL exactly as it appears after
+  '=== SOURCE (type): ' in the headers. URLs only, no type suffix.
+
+Limits: programs 8, leaders 10, open_roles 15, recent_news 5 (most recent),
+events 8, funders 10, memberships 10.
+
+Reply with a single JSON object matching this schema and nothing else - no
+prose, no explanation, no markdown fences:
+
+{schema}
+"""
+
+
+# Extraction is validated in code rather than with the API's structured
+# outputs. The full profile schema exceeds the grammar compiler's size limit
+# ("The compiled grammar is too large"), so the schema goes in the prompt and
+# Pydantic enforces it on the way back. The link picker's schema is small
+# enough that it still uses structured outputs.
+SECTION_MODELS: dict[str, type[BaseModel]] = {
+    "organization": OrganizationExtract,
+    "fit": FitExtract,
+    "financials": FinancialsExtract,
+    "contacts": Contacts,
+    "buying_signals": BuyingSignalsExtract,
+    "timing": Timing,
+    "network": Network,
+}
+
+
+def extraction_schema_text() -> str:
+    """The schema sent to the model, generated from the Pydantic models.
+
+    Generated rather than hand-written so the prompt cannot drift out of step
+    with what validation will actually accept.
+    """
+    return json.dumps(ExtractionResult.model_json_schema(), separators=(",", ":"))
+
+
+def parse_json_reply(text: str) -> dict[str, Any]:
+    """Parse a JSON object out of a model reply, tolerating stray wrapping."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(text[start : end + 1])
+        raise
+
+
+def _normalise_field_sources(raw: Any) -> list[FieldSource]:
+    """Accept either [{group, urls}] or {group: [urls]}."""
+    sources: list[FieldSource] = []
+    if isinstance(raw, dict):
+        raw = [{"group": key, "urls": value} for key, value in raw.items()]
+    for item in raw or []:
+        try:
+            source = FieldSource.model_validate(item)
+        except ValidationError:
+            continue
+        # Strip a trailing "(html)"/"(pdf)" if the model copied the header type.
+        source.urls = [
+            re.sub(r"\s*\((?:html|pdf|rss|sitemap)\)\s*$", "", url)
+            for url in source.urls
+        ]
+        sources.append(source)
+    return sources
+
+
+def salvage_extraction(
+    data: dict[str, Any]
+) -> tuple[ExtractionResult | None, list[str]]:
+    """Validate section by section, keeping whatever is well formed.
+
+    One bad enum value in an events list shouldn't cost us the mission
+    statement, so a section that fails validation is dropped on its own and
+    noted in the warnings rather than failing the whole profile.
+    """
+    sections: dict[str, Any] = {}
+    warnings: list[str] = []
+    for key, model in SECTION_MODELS.items():
+        raw = data.get(key)
+        if raw is None:
+            continue
+        try:
+            sections[key] = model.model_validate(raw)
+        except ValidationError as exc:
+            warnings.append(
+                f"dropped invalid section '{key}' ({exc.error_count()} errors)"
+            )
+    if "organization" not in sections:
+        return None, warnings
+    return (
+        ExtractionResult(
+            field_sources=_normalise_field_sources(data.get("field_sources")),
+            **sections,
+        ),
+        warnings,
+    )
+
+
+def build_extraction_prompt(
+    documents: list[dict[str, Any]], feed_items: list[dict[str, Any]]
+) -> str:
+    """Label every document with its source URL so citations are possible."""
+    parts = [
+        f"=== SOURCE ({document['type']}): {document['url']} ===\n"
+        f"{document['text']}"
+        for document in documents
+        if document["text"]
+    ]
+    if feed_items:
+        lines = "\n".join(
+            f"- {item.get('date') or 'no date'} | {item.get('title') or ''} "
+            f"| {item.get('link') or ''}"
+            for item in feed_items
+        )
+        parts.append(f"=== SOURCE (rss): site news feed ===\n{lines}")
+    return "\n\n".join(parts)
+
+
+def extract(
+    documents: list[dict[str, Any]], feed_items: list[dict[str, Any]]
+) -> tuple[ExtractionResult | None, list[str]]:
+    """LLM call #2: read the documents and fill in the schema.
+
+    On a validation failure the errors are sent back for one retry, which is
+    usually enough - the model corrects an enum or a stray string in a number
+    field. Anything still invalid is salvaged section by section.
+    """
+    prompt = build_extraction_prompt(documents, feed_items)
+    if not prompt.strip():
+        return None, ["no readable text was collected"]
+
+    system = EXTRACT_SYSTEM.format(schema=extraction_schema_text())
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    warnings: list[str] = []
+
+    for attempt in range(2):
+        try:
+            response = client().messages.create(
+                model=EXTRACT_MODEL,
+                max_tokens=8000,
+                system=system,
+                messages=messages,
+            )
+            record_usage(
+                EXTRACT_MODEL, response.usage.input_tokens,
+                response.usage.output_tokens,
+            )
+            reply = "".join(
+                block.text for block in response.content if block.type == "text"
+            )
+            if response.stop_reason == "max_tokens":
+                warnings.append("extraction reply hit the token cap")
+
+            data = parse_json_reply(reply)
+            try:
+                return ExtractionResult.model_validate(data), warnings
+            except ValidationError as exc:
+                if attempt == 0:
+                    log.info("extraction did not validate, retrying with errors")
+                    messages += [
+                        {"role": "assistant", "content": reply},
+                        {
+                            "role": "user",
+                            "content": (
+                                "That did not match the schema. Fix these "
+                                f"errors and resend the whole JSON object:\n"
+                                f"{exc.errors(include_url=False)}"
+                            ),
+                        },
+                    ]
+                    continue
+                result, salvage_warnings = salvage_extraction(data)
+                return result, warnings + salvage_warnings
+        except Exception as exc:
+            log.warning("extraction failed (attempt %d): %s", attempt + 1, exc)
+            warnings.append(f"extraction error: {type(exc).__name__}")
+    return None, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -1402,8 +1662,13 @@ def major_group_for_ntee(ntee_code: str | None) -> str | None:
 
 
 def post_process(profile: NonprofitProfile) -> None:
-    """Fill every computed field, in place."""
-    raise NotImplementedError
+    """Fill every computed field, in place.
+
+    IRS enrichment and the remaining computed fields land in milestone 6.
+    """
+    profile.buying_signals.executive_search_open = any(
+        role.seniority == "executive" for role in profile.buying_signals.open_roles
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1424,7 +1689,10 @@ CSV_COLUMNS = [
 
 def write_json(profile: NonprofitProfile) -> Path:
     """Write output/<slug>.json and return the path."""
-    raise NotImplementedError
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    path = OUTPUT_DIR / f"{slugify(profile.organization.name)}.json"
+    path.write_text(profile.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def profile_to_row(profile: NonprofitProfile) -> dict[str, Any]:
@@ -1441,9 +1709,129 @@ def rebuild_combined_csv() -> Path:
 # 11. MAIN
 # ---------------------------------------------------------------------------
 
+def usage_snapshot() -> dict[str, dict[str, int]]:
+    """Copy of the running token totals, for per-org accounting."""
+    return {model: dict(counts) for model, counts in USAGE.items()}
+
+
+def usage_since(before: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    """Tokens spent since `before` — one org's share of a batch run."""
+    delta: dict[str, dict[str, int]] = {}
+    for model, counts in USAGE.items():
+        start = before.get(model, {"input": 0, "output": 0})
+        spent = {
+            "input": counts["input"] - start["input"],
+            "output": counts["output"] - start["output"],
+        }
+        if spent["input"] or spent["output"]:
+            delta[model] = spent
+    return delta
+
+
 def process_org(value: str, use_browser: bool = True) -> NonprofitProfile:
     """Run the whole pipeline for one organisation name or URL."""
-    raise NotImplementedError
+    started_usage = usage_snapshot()
+    warnings: list[str] = []
+
+    resolved = resolve_input(value)
+    home_url = resolved["url"]
+
+    home = fetch_homepage(home_url, use_browser=use_browser)
+    if not home["ok"]:
+        raise RuntimeError(f"could not fetch {home_url}: {home['error']}")
+    home_url = home["url"]
+
+    found = discover_candidates(home_url, home["html"])
+    candidates = found["candidates"]
+    if not candidates:
+        warnings.append("no candidate links found on the homepage")
+
+    reserved = reserve_report_links(candidates)
+    budget = max(1, MAX_PAGES - len(reserved))
+    picked = pick_links(candidates, home_url, limit=budget)
+    if not reserved:
+        warnings.append("no annual report, 990 or financials page found")
+
+    collected = collect_documents(home, candidates, picked, use_browser=use_browser)
+    documents = collected["documents"]
+
+    extracted, extract_warnings = extract(documents, found["feed_items"])
+    warnings += extract_warnings
+    if extracted is None:
+        warnings.append("extraction failed; only crawl metadata was recorded")
+        extracted = ExtractionResult(
+            organization=OrganizationExtract(
+                name=registrable_domain(urlsplit(home_url).netloc)
+            )
+        )
+
+    profile = NonprofitProfile(
+        organization=Organization(
+            name=extracted.organization.name,
+            website=home_url,
+            country=extracted.organization.country,
+            hq_city=extracted.organization.hq_city,
+            ein=extracted.organization.ein,
+            year_founded=extracted.organization.year_founded,
+        ),
+        fit=Fit(
+            mission=extracted.fit.mission,
+            programs=extracted.fit.programs,
+            cause_area=CauseArea(
+                major_group=extracted.fit.cause_area, source="llm"
+            ),
+            geographic_scope=extracted.fit.geographic_scope,
+        ),
+        financials=Financials(
+            years=extracted.financials.years,
+            employee_count=extracted.financials.employee_count,
+            auditor_firm=extracted.financials.auditor_firm,
+            source="annual_report" if extracted.financials.years else "none",
+        ),
+        contacts=extracted.contacts,
+        buying_signals=BuyingSignals(
+            open_roles=extracted.buying_signals.open_roles,
+            rfps=extracted.buying_signals.rfps,
+            leadership_changes=extracted.buying_signals.leadership_changes,
+            capital_projects=extracted.buying_signals.capital_projects,
+            campaign=extracted.buying_signals.campaign,
+        ),
+        timing=extracted.timing,
+        network=extracted.network,
+        meta=Meta(
+            input=value,
+            resolved_url=home_url,
+            resolution_method=resolved["resolution_method"],
+            crawled_at=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            pages_crawled=[
+                CrawledPage(
+                    url=document["url"], type=document["type"],
+                    method=document["method"], chars=document["chars"],
+                )
+                for document in documents
+            ],
+            failed_pages=[
+                FailedPage(url=failure["url"], error=failure["error"])
+                for failure in collected["failed_pages"]
+            ],
+            field_sources={
+                source.group: source.urls for source in extracted.field_sources
+            },
+            warnings=warnings,
+        ),
+    )
+
+    if found["feed_url"]:
+        profile.meta.pages_crawled.append(
+            CrawledPage(url=found["feed_url"], type="rss", method="http",
+                        chars=len(found["feed_items"]))
+        )
+
+    post_process(profile)
+
+    profile.meta.tokens = usage_since(started_usage)
+    profile.meta.cost_usd = usage_cost_usd(profile.meta.tokens)
+    return profile
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1496,7 +1884,21 @@ def main(argv: list[str] | None = None) -> int:
             use_llm=not args.no_llm,
         )
 
-    raise NotImplementedError("full pipeline lands in a later milestone")
+    profile = process_org(args.org, use_browser=not args.no_browser)
+    path = write_json(profile)
+    log.info("wrote %s", path)
+    print(f"\n{profile.organization.name}")
+    print(f"  mission     {(profile.fit.mission or '-')[:90]}")
+    print(f"  programs    {len(profile.fit.programs)}")
+    print(f"  leaders     {len(profile.contacts.leaders)}")
+    print(f"  open roles  {len(profile.buying_signals.open_roles)}")
+    print(f"  news        {len(profile.timing.recent_news)}")
+    print(f"  events      {len(profile.timing.events)}")
+    print(f"  fin. years  {len(profile.financials.years)}")
+    print(f"  warnings    {len(profile.meta.warnings)}")
+    print(f"  tokens      {profile.meta.tokens}")
+    print(f"  cost        ${profile.meta.cost_usd:.4f}\n")
+    return 0
 
 
 def show_stage(
