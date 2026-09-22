@@ -1150,6 +1150,15 @@ def extract(documents: list[dict[str, Any]], feed_items: list[dict[str, Any]]) -
 # 8. PROPUBLICA
 # ---------------------------------------------------------------------------
 
+# DEFERRED DECISION (2026-09-22): we currently fetch both the 990 PDF and
+# ProPublica's structured filings, which overlap. PDFs are ~45% of the
+# extraction payload (~$0.005-0.010 per org, ~$2.5-5k across 500k). Once this
+# enrichment works, measure how far ProPublica's revenue/expenses/assets agree
+# with the PDF-derived figures, then decide whether to stop fetching 990 PDFs
+# for US orgs. Annual reports stay either way - campaigns, auditor firm and
+# programme detail are not in IRS data. Do not drop them before measuring.
+
+
 def propublica_search(name: str) -> list[dict[str, Any]]:
     """Search the Nonprofit Explorer by organisation name."""
     raise NotImplementedError
