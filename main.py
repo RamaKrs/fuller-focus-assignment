@@ -36,13 +36,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 from urllib import robotparser
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import (
+    parse_qsl, quote_plus, urlencode, urljoin, urlsplit, urlunsplit,
+)
 
 import anthropic
 import httpx
 import pymupdf
 import trafilatura
 from bs4 import BeautifulSoup
+from rapidfuzz import fuzz
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 
@@ -1627,19 +1630,176 @@ def extract(
 # programme detail are not in IRS data. Do not drop them before measuring.
 
 
+def digits_only(ein: str | None) -> str | None:
+    """36-3673599 -> 363673599, which is the form the API expects."""
+    if not ein:
+        return None
+    digits = re.sub(r"\D", "", ein)
+    return digits if len(digits) == 9 else None
+
+
 def propublica_search(name: str) -> list[dict[str, Any]]:
     """Search the Nonprofit Explorer by organisation name."""
-    raise NotImplementedError
+    result = fetch(f"{PROPUBLICA_BASE}search.json?q={quote_plus(name)}")
+    if not result["ok"]:
+        log.warning("ProPublica search failed: %s", result["error"])
+        return []
+    try:
+        return json.loads(result["content"]).get("organizations") or []
+    except (json.JSONDecodeError, AttributeError) as exc:
+        log.warning("ProPublica search returned unusable JSON: %s", exc)
+        return []
 
 
 def propublica_organization(ein: str) -> dict[str, Any] | None:
     """Fetch one organisation, including its filings."""
-    raise NotImplementedError
+    result = fetch(f"{PROPUBLICA_BASE}organizations/{ein}.json")
+    if not result["ok"]:
+        log.info("ProPublica has no record for EIN %s (%s)", ein, result["error"])
+        return None
+    try:
+        return json.loads(result["content"])
+    except json.JSONDecodeError as exc:
+        log.warning("ProPublica organization JSON unusable: %s", exc)
+        return None
+
+
+def match_propublica(
+    name: str, candidates: list[dict[str, Any]], hq_city: str | None = None
+) -> tuple[dict[str, Any] | None, float]:
+    """Best name match above the threshold, with a nudge for a matching city.
+
+    Deliberately strict: "Feeding America" has sixteen search hits, most of
+    them independent member food banks. A wrong EIN is worse than no EIN,
+    because it silently attaches someone else's finances.
+    """
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    city = (hq_city or "").split(",")[0].strip().lower()
+    for candidate in candidates:
+        score = fuzz.token_set_ratio(name.lower(), (candidate.get("name") or "").lower())
+        if city and city == (candidate.get("city") or "").strip().lower():
+            score = min(100.0, score + 5)
+        if score > best_score:
+            best, best_score = candidate, score
+    if best is None or best_score < PROPUBLICA_MATCH_THRESHOLD:
+        return None, best_score
+    return best, best_score
+
+
+def _filing_years(payload: dict[str, Any]) -> list[FinancialYear]:
+    """Filings that actually carry figures, newest first.
+
+    ProPublica also returns `filings_without_data` - filings it holds only as
+    a PDF. Those are skipped here; the year they cover is often available
+    from the organisation's own copy of the 990, which is one reason the site
+    crawl still earns its place.
+    """
+    years: list[FinancialYear] = []
+    for filing in payload.get("filings_with_data") or []:
+        fiscal_year = filing.get("tax_prd_yr")
+        if not fiscal_year:
+            continue
+        years.append(
+            FinancialYear(
+                fiscal_year=int(fiscal_year),
+                revenue=filing.get("totrevenue"),
+                expenses=filing.get("totfuncexpns"),
+                total_assets=filing.get("totassetsend"),
+            )
+        )
+    years.sort(key=lambda year: year.fiscal_year, reverse=True)
+    return years[:MAX_FILING_YEARS]
 
 
 def enrich_financials(profile: NonprofitProfile) -> None:
     """Attach multi-year IRS financials and the NTEE code, in place."""
-    raise NotImplementedError
+    name = profile.organization.name
+    ein = digits_only(profile.organization.ein)
+    payload: dict[str, Any] | None = None
+    match_score = 100.0
+
+    if ein:
+        # An EIN printed on the site is the most reliable key there is.
+        payload = propublica_organization(ein)
+        if payload is None:
+            log.info("EIN %s from the site did not resolve; trying by name", ein)
+
+    if payload is None:
+        candidates = propublica_search(name)
+        match, match_score = match_propublica(
+            name, candidates, profile.organization.hq_city
+        )
+        if match is None:
+            profile.meta.warnings.append(
+                "no confident ProPublica match; financials are from the site only"
+                + (f" (best name score {match_score:.0f})" if candidates else "")
+            )
+            return
+        ein = str(match.get("ein") or "").zfill(9)
+        payload = propublica_organization(ein)
+        if payload is None:
+            profile.meta.warnings.append("ProPublica matched but returned no record")
+            return
+
+    organization = payload.get("organization") or {}
+    irs_years = _filing_years(payload)
+
+    # Where both sources cover a year, compare them. A site figure that
+    # disagrees materially with the filed return is worth surfacing: it is
+    # usually a different fiscal period or a consolidated group total, and a
+    # seller quoting the wrong one looks careless.
+    site_by_year = {year.fiscal_year: year for year in profile.financials.years}
+    for irs_year in irs_years:
+        site_year = site_by_year.get(irs_year.fiscal_year)
+        if not (site_year and site_year.revenue and irs_year.revenue):
+            continue
+        drift = abs(site_year.revenue - irs_year.revenue) / irs_year.revenue
+        log.info(
+            "FY%d revenue: site %.0f vs IRS %.0f (%.1f%% apart)",
+            irs_year.fiscal_year, site_year.revenue, irs_year.revenue, drift * 100,
+        )
+        if drift > 0.05:
+            profile.meta.warnings.append(
+                f"FY{irs_year.fiscal_year} revenue on the site differs from the "
+                f"IRS filing by {drift:.0%}; the IRS figure is used"
+            )
+
+    # Merge rather than replace. IRS figures win for any year both sources
+    # cover, but ProPublica lags - Feeding America's FY2024 filing is present
+    # there only as a PDF, while the organisation publishes the numbers
+    # itself - so a newer year found on the site is kept.
+    covered = {year.fiscal_year for year in irs_years}
+    kept = [year for year in profile.financials.years if year.fiscal_year not in covered]
+    merged = sorted(
+        irs_years + kept, key=lambda year: year.fiscal_year, reverse=True
+    )[:MAX_FILING_YEARS]
+
+    if kept:
+        profile.meta.warnings.append(
+            "kept "
+            + ", ".join(
+                str(year) for year in sorted(
+                    (year.fiscal_year for year in kept), reverse=True
+                )
+            )
+            + " from the site: ProPublica has no structured data for those years"
+        )
+
+    profile.financials.years = merged
+    profile.financials.source = "propublica" if irs_years else "annual_report"
+    profile.financials.propublica_match = ProPublicaMatch(
+        name=organization.get("name") or name,
+        ein=str(organization.get("ein") or ein),
+        match_score=round(match_score, 1),
+    )
+
+    ntee = organization.get("ntee_code")
+    major_group = major_group_for_ntee(ntee)
+    if major_group:
+        profile.fit.cause_area = CauseArea(
+            ntee_code=ntee, major_group=major_group, source="irs_ntee"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1647,28 +1807,71 @@ def enrich_financials(profile: NonprofitProfile) -> None:
 # ---------------------------------------------------------------------------
 
 def revenue_growth_pct(years: list[FinancialYear]) -> float | None:
-    """CAGR between the oldest and newest year with revenue; None if < 2."""
-    raise NotImplementedError
+    """Compound annual growth between the oldest and newest year with revenue.
+
+    A compound rate rather than a raw difference, so a three-year and a
+    one-year gap are comparable across organisations.
+    """
+    with_revenue = sorted(
+        (year for year in years if year.revenue and year.revenue > 0),
+        key=lambda year: year.fiscal_year,
+    )
+    if len(with_revenue) < 2:
+        return None
+    oldest, newest = with_revenue[0], with_revenue[-1]
+    span = newest.fiscal_year - oldest.fiscal_year
+    if span <= 0:
+        return None
+    growth = (newest.revenue / oldest.revenue) ** (1 / span) - 1
+    return round(growth * 100, 1)
 
 
 def size_bucket_for(revenue: float | None) -> str:
     """Map the latest revenue onto a fixed size bucket."""
-    raise NotImplementedError
+    if revenue is None:
+        return "unknown"
+    for threshold, label in SIZE_BUCKETS:
+        if revenue < threshold:
+            return label
+    return SIZE_BUCKET_TOP
 
 
 def major_group_for_ntee(ntee_code: str | None) -> str | None:
     """First letter of the NTEE code -> major group name."""
-    raise NotImplementedError
+    if not ntee_code:
+        return None
+    return NTEE_MAJOR_GROUPS.get(ntee_code.strip()[:1].upper())
+
+
+def latest_year(years: list[FinancialYear]) -> FinancialYear | None:
+    """Most recent year that carries a revenue figure."""
+    with_revenue = [year for year in years if year.revenue is not None]
+    if not with_revenue:
+        return None
+    return max(with_revenue, key=lambda year: year.fiscal_year)
 
 
 def post_process(profile: NonprofitProfile) -> None:
     """Fill every computed field, in place.
 
-    IRS enrichment and the remaining computed fields land in milestone 6.
+    Everything here is arithmetic or a lookup, so it is done in code. The
+    model is never asked for a value that can be derived - that is what keeps
+    categories consistent across organisations.
     """
     profile.buying_signals.executive_search_open = any(
         role.seniority == "executive" for role in profile.buying_signals.open_roles
     )
+
+    years = profile.financials.years
+    profile.financials.revenue_growth_pct = revenue_growth_pct(years)
+    newest = latest_year(years)
+    profile.financials.size_bucket = size_bucket_for(
+        newest.revenue if newest else None
+    )
+
+    # Reject anything outside the fixed taxonomy, whatever its source.
+    if profile.fit.cause_area.major_group not in CAUSE_AREAS:
+        profile.fit.cause_area.major_group = "Unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -1827,6 +2030,12 @@ def process_org(value: str, use_browser: bool = True) -> NonprofitProfile:
                         chars=len(found["feed_items"]))
         )
 
+    try:
+        enrich_financials(profile)
+    except Exception as exc:  # enrichment must never lose the crawl
+        log.warning("ProPublica enrichment failed: %s", exc)
+        profile.meta.warnings.append(f"ProPublica enrichment failed: {exc}")
+
     post_process(profile)
 
     profile.meta.tokens = usage_since(started_usage)
@@ -1894,7 +2103,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  open roles  {len(profile.buying_signals.open_roles)}")
     print(f"  news        {len(profile.timing.recent_news)}")
     print(f"  events      {len(profile.timing.events)}")
-    print(f"  fin. years  {len(profile.financials.years)}")
+    print(f"  fin. years  {len(profile.financials.years)} "
+          f"(source: {profile.financials.source})")
+    print(f"  size        {profile.financials.size_bucket}"
+          f"   growth {profile.financials.revenue_growth_pct}%")
+    print(f"  cause       {profile.fit.cause_area.major_group} "
+          f"({profile.fit.cause_area.ntee_code or 'no NTEE'}, "
+          f"{profile.fit.cause_area.source})")
     print(f"  warnings    {len(profile.meta.warnings)}")
     print(f"  tokens      {profile.meta.tokens}")
     print(f"  cost        ${profile.meta.cost_usd:.4f}\n")
