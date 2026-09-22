@@ -34,7 +34,9 @@ from typing import Any, Literal
 from urllib import robotparser
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
+import pymupdf
 import httpx
+import trafilatura
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
@@ -56,7 +58,10 @@ PRICES: dict[str, tuple[float, float]] = {
 
 # Crawl limits.
 MAX_PAGES = 6                # pages fetched per org, on top of the homepage
-MAX_PDF_PAGES = 10           # pages read from any single PDF
+RESERVED_REPORT_SLOTS = 2    # of MAX_PAGES, held for financial documents
+MAX_REPORT_PDFS = 2          # report PDFs followed one level below a page
+MAX_PDF_PAGES = 16           # pages read from any single PDF
+MAX_PDF_HEAD_PAGES = 6       # always read this many from the front
 MAX_CHARS_PER_DOC = 15_000   # per-document cap before the extraction prompt
 MAX_TOTAL_CHARS = 60_000     # total cap across all documents (~15k tokens)
 MAX_SITEMAP_URLS = 200       # sitemap URLs kept as link candidates
@@ -155,6 +160,49 @@ LINK_FALLBACK_KEYWORDS = (
 )
 
 # What we ask the link picker to cover, in plain words.
+# Financial documents are the point of the exercise, so they are found by
+# keyword in code and given reserved slots — never left to the model's choice.
+STRONG_REPORT_TERMS = (
+    "990", "annual report", "annualreport", "annual-report", "annual_report",
+    "financial statement", "audited financial", "form 990", "form-990",
+)
+WEAK_REPORT_TERMS = (
+    "financial", "audit", "impact report", "impact-report", "annual", "irs",
+    "tax return", "tax-return", "transparency", "accountability", "report",
+)
+
+# Phrases that mark the pages of a PDF actually worth reading. Annual reports
+# put the numbers at the back, well past any fixed page cap.
+PDF_FINANCIAL_MARKERS = (
+    "total revenue", "total expenses", "statement of activities",
+    "statement of financial position", "independent auditor", "net assets",
+    "total assets", "functional expenses", "balance sheet", "total support",
+)
+
+# Keyword -> schema group, for the deterministic link picker (the fallback
+# when the model call fails, and the selector used before it exists).
+GROUP_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "financials": STRONG_REPORT_TERMS + ("financials", "finances"),
+    "about": ("about", "mission", "who-we-are", "our-story", "history"),
+    "programs": ("program", "what-we-do", "our-work", "initiative", "services"),
+    "leadership": ("leadership", "our-team", "meet-the-team", "staff", "board",
+                   "governance", "executive", "trustees"),
+    "careers": ("career", "/jobs", "job-openings", "employment", "vacanc",
+                "work-with-us", "join-us", "join-our-team"),
+    "news": ("news", "press", "blog", "media", "stories"),
+    "events": ("event", "gala", "fundrais", "walk", "conference"),
+    "rfps": ("rfp", "procurement", "tender", "request-for-proposal"),
+    "campaign": ("campaign", "appeal"),
+    "partners": ("partner", "funder", "supporter", "sponsor", "corporate"),
+    "contact": ("contact",),
+}
+
+# Order the extraction prompt is filled in when the character budget is tight.
+GROUP_PRIORITY = (
+    "financials", "about", "programs", "leadership", "careers", "news",
+    "events", "campaign", "rfps", "partners", "contact",
+)
+
 SCHEMA_GROUPS = (
     "about/mission", "programs", "leadership/team", "annual report or financials PDF",
     "news/press", "events", "careers/jobs", "RFPs/procurement", "campaign",
@@ -713,19 +761,109 @@ def discover_candidates(home_url: str, home_html: str) -> dict[str, Any]:
 # 6. PARSING
 # ---------------------------------------------------------------------------
 
-def html_to_text(html: str, url: str) -> str:
-    """Main-text extraction with trafilatura, falling back to BeautifulSoup."""
-    raise NotImplementedError
+def _footer_text(html: str) -> str:
+    """Footer text, which is where the EIN, phone and address usually live.
+
+    trafilatura strips footers on purpose, so this is pulled out separately
+    and appended to the homepage only — the same footer on six pages would
+    just burn tokens.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    parts = []
+    for tag in soup.find_all(["footer"]) + soup.find_all(
+        attrs={"class": re.compile(r"footer", re.I)}
+    ):
+        parts.append(" ".join(tag.get_text(" ", strip=True).split()))
+    seen, out = set(), []
+    for part in parts:
+        if part and part not in seen:
+            seen.add(part)
+            out.append(part)
+    return unescape(" ".join(out))[:3000]
+
+
+def html_to_text(html: str, url: str, keep_footer: bool = False) -> str:
+    """Main text via trafilatura, falling back to a stripped BeautifulSoup."""
+    text = ""
+    try:
+        text = (
+            trafilatura.extract(
+                html, url=url, include_comments=False, include_tables=True,
+                favor_recall=True,
+            )
+            or ""
+        )
+    except Exception as exc:  # trafilatura is strict about malformed markup
+        log.debug("trafilatura failed on %s: %s", url, exc)
+    if len(text) < MIN_TEXT_CHARS:
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+        fallback = " ".join(soup.get_text(" ", strip=True).split())
+        if len(fallback) > len(text):
+            text = fallback
+    if keep_footer:
+        footer = _footer_text(html)
+        if footer and footer not in text:
+            text = f"{text}\n\n--- page footer ---\n{footer}"
+    return text.strip()
 
 
 def pdf_to_text(data: bytes) -> str:
-    """First MAX_PDF_PAGES pages of a PDF."""
-    raise NotImplementedError
+    """Text from a PDF: the opening pages plus any page carrying financials.
+
+    A fixed "first N pages" cap reads the glossy introduction and misses the
+    statements at the back, so pages are scanned locally (no tokens) for the
+    markers in PDF_FINANCIAL_MARKERS and pulled in as well. Page numbers are
+    labelled so the model can see where the gaps are.
+    """
+    try:
+        document = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as exc:
+        raise ValueError(f"unreadable PDF: {exc}") from exc
+
+    with document:
+        total = document.page_count
+        chosen = list(range(min(MAX_PDF_HEAD_PAGES, total)))
+        for index in range(len(chosen), total):
+            if len(chosen) >= MAX_PDF_PAGES:
+                break
+            try:
+                page_text = document[index].get_text()
+            except Exception:
+                continue
+            low = page_text.lower()
+            if any(marker in low for marker in PDF_FINANCIAL_MARKERS):
+                chosen.append(index)
+
+        parts = []
+        for index in chosen:
+            try:
+                page_text = " ".join(document[index].get_text().split())
+            except Exception as exc:
+                log.debug("pdf page %d failed: %s", index, exc)
+                continue
+            if page_text:
+                parts.append(f"[page {index + 1} of {total}] {page_text}")
+
+    if not parts:
+        raise ValueError("PDF contained no extractable text (likely scanned)")
+    return "\n\n".join(parts)
 
 
 def render_with_browser(url: str) -> str:
     """Playwright fallback for JS-rendered pages; returns HTML."""
-    raise NotImplementedError
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(user_agent=USER_AGENT)
+            page.goto(url, wait_until="networkidle",
+                      timeout=int(BROWSER_TIMEOUT * 1000))
+            return page.content()
+        finally:
+            browser.close()
 
 
 def _feed_field(item: Any, names: tuple[str, ...]) -> Any:
@@ -760,6 +898,238 @@ def parse_feed(xml: bytes) -> list[dict[str, str | None]]:
     return items
 
 
+def report_score(text: str, url: str) -> int:
+    """How much a link looks like an annual report, 990 or financial statement.
+
+    Anchor text and URL are both scored; PDFs and recent years get a bump, so
+    "2025 Annual Report (PDF)" outranks a 2016 one.
+    """
+    blob = f"{text} {url}".lower().replace("%20", " ")
+    # Presence, not count: "990" and "form 990" are the same signal seen twice.
+    score = 4 if any(term in blob for term in STRONG_REPORT_TERMS) else 0
+    score += 1 if any(term in blob for term in WEAK_REPORT_TERMS) else 0
+    if not score:
+        return 0
+    if urlsplit(url.lower()).path.endswith(".pdf"):
+        score += 2
+    # Recency outweighs wording: the current year's filing is the one worth
+    # reading, even when an older one happens to be better labelled.
+    years = [int(y) for y in re.findall(r"(?:19|20)\d{2}", blob)]
+    if years:
+        this_year = int(time.strftime("%Y"))
+        newest = min(max(years), this_year)
+        score += max(0, 8 - (this_year - newest))
+    return score
+
+
+def rank_reports(links: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Report-ish links, best first."""
+    scored = [(report_score(link["text"], link["url"]), link) for link in links]
+    return [link for score, link in sorted(scored, key=lambda p: -p[0]) if score > 0]
+
+
+def groups_for(text: str, url: str) -> list[str]:
+    """Which schema groups a link's text and URL suggest."""
+    blob = f"{text} {url}".lower()
+    return [
+        group
+        for group, keywords in GROUP_KEYWORDS.items()
+        if any(keyword in blob for keyword in keywords)
+    ]
+
+
+def pick_links_by_keyword(candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Deterministic picker: the best link for each schema group, in priority
+    order. Used as the fallback when the model call fails."""
+    best: dict[str, tuple[int, dict[str, str]]] = {}
+    for link in candidates:
+        covers = groups_for(link["text"], link["url"])
+        score = report_score(link["text"], link["url"]) + len(covers)
+        for group in covers:
+            current = best.get(group)
+            if current is None or score > current[0]:
+                best[group] = (score, link)
+
+    chosen: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in GROUP_PRIORITY:
+        if group not in best or len(chosen) >= MAX_PAGES:
+            continue
+        link = best[group][1]
+        if link["url"] in seen:
+            continue
+        seen.add(link["url"])
+        chosen.append(
+            {
+                "url": link["url"],
+                "covers": groups_for(link["text"], link["url"]),
+                "reason": f"keyword match for {group}",
+            }
+        )
+    return chosen
+
+
+def reserve_report_links(candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Financial documents, chosen in code and never left to the model."""
+    reserved: list[dict[str, Any]] = []
+    for link in rank_reports(candidates)[:RESERVED_REPORT_SLOTS]:
+        reserved.append(
+            {
+                "url": link["url"],
+                "covers": ["financials"],
+                "reason": "reserved slot: looks like an annual report or 990",
+            }
+        )
+    return reserved
+
+
+def _parse_document(
+    result: dict[str, Any], picked: dict[str, Any], use_browser: bool
+) -> dict[str, Any]:
+    """Turn one fetched response into a text document record."""
+    url = result["url"]
+    content_type = result["content_type"]
+    is_pdf = content_type == "application/pdf" or urlsplit(
+        url.lower()
+    ).path.endswith(".pdf")
+
+    if is_pdf:
+        text = pdf_to_text(result["content"])
+        return {
+            "url": url, "type": "pdf", "method": "http", "text": text,
+            "covers": picked.get("covers", []), "html": None,
+        }
+
+    html = result["content"].decode("utf-8", "replace")
+    method = "http"
+    text = html_to_text(html, url, keep_footer=picked.get("is_home", False))
+    if len(text) < MIN_TEXT_CHARS and use_browser:
+        log.info("thin page (%d chars), rendering with browser: %s", len(text), url)
+        try:
+            html = render_with_browser(url)
+            text = html_to_text(html, url, keep_footer=picked.get("is_home", False))
+            method = "browser"
+        except Exception as exc:
+            log.warning("browser render failed for %s: %s", url, exc)
+    return {
+        "url": url, "type": "html", "method": method, "text": text,
+        "covers": picked.get("covers", []), "html": html,
+    }
+
+
+def collect_documents(
+    home_url: str,
+    home_result: dict[str, Any],
+    candidates: list[dict[str, str]],
+    picked: list[dict[str, Any]],
+    use_browser: bool = True,
+) -> dict[str, Any]:
+    """Fetch and parse the chosen pages, following report PDFs one level down.
+
+    Reserved financial slots are queued first, then the picker's choices. When
+    a fetched HTML page links to an annual report or 990 — which is where they
+    almost always live, not on the homepage — the best one is pulled in too.
+    """
+    documents: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    home_doc = _parse_document(
+        home_result, {"covers": ["about"], "is_home": True}, use_browser
+    )
+    documents.append(home_doc)
+
+    queue = reserve_report_links(candidates)
+    seen = {normalise_url(home_url).rstrip("/")}
+    seen.update(item["url"].rstrip("/") for item in queue)
+    for item in picked:
+        if item["url"].rstrip("/") not in seen:
+            seen.add(item["url"].rstrip("/"))
+            queue.append(item)
+
+    # A report PDF found on a fetched page jumps the queue.
+    pdfs_followed = 0
+    fetched = 0
+    while queue and fetched < MAX_PAGES:
+        item = queue.pop(0)
+        url = item["url"]
+        if not robots_allows(home_url, url):
+            log.info("robots.txt disallows %s", url)
+            failed.append({"url": url, "error": "disallowed by robots.txt"})
+            continue
+        result = fetch(url)
+        fetched += 1
+        if not result["ok"]:
+            log.warning("skipping %s: %s", url, result["error"])
+            failed.append({"url": url, "error": result["error"]})
+            continue
+        try:
+            document = _parse_document(result, item, use_browser)
+        except Exception as exc:
+            log.warning("could not parse %s: %s", url, exc)
+            failed.append({"url": url, "error": str(exc)})
+            continue
+        documents.append(document)
+
+        if (
+            document["type"] == "html"
+            and document["html"]
+            and pdfs_followed < MAX_REPORT_PDFS
+        ):
+            deeper = rank_reports(
+                [
+                    link
+                    for link in extract_links(document["html"], document["url"])
+                    if link["url"].lower().endswith(".pdf")
+                    and link["url"].rstrip("/") not in seen
+                ]
+            )
+            for link in deeper:
+                if pdfs_followed >= MAX_REPORT_PDFS:
+                    break
+                # The same PDF is often linked twice under different anchor
+                # text; without this it would eat both report slots.
+                key = link["url"].rstrip("/")
+                if key in seen:
+                    continue
+                seen.add(key)
+                pdfs_followed += 1
+                queue.insert(
+                    0,
+                    {
+                        "url": link["url"],
+                        "covers": ["financials"],
+                        "reason": f"report PDF linked from {document['url']}",
+                    },
+                )
+
+    return {"documents": apply_budget(documents), "failed_pages": failed}
+
+
+def apply_budget(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cap each document and the total, spending the budget on what matters.
+
+    The homepage stays first; everything else is ordered by GROUP_PRIORITY so
+    an annual report is never the thing that gets cut.
+    """
+    def rank(document: dict[str, Any]) -> int:
+        covers = document.get("covers") or []
+        ranks = [GROUP_PRIORITY.index(c) for c in covers if c in GROUP_PRIORITY]
+        return min(ranks) if ranks else len(GROUP_PRIORITY)
+
+    ordered = documents[:1] + sorted(documents[1:], key=rank)
+    budget = MAX_TOTAL_CHARS
+    kept: list[dict[str, Any]] = []
+    for document in ordered:
+        if budget <= 0:
+            log.info("character budget spent, dropping %s", document["url"])
+            continue
+        text = document["text"][:MAX_CHARS_PER_DOC][:budget]
+        budget -= len(text)
+        document = {**document, "text": text, "chars": len(text)}
+        document.pop("html", None)
+        kept.append(document)
+    return kept
+
+
 # ---------------------------------------------------------------------------
 # 7. LLM CALLS
 # ---------------------------------------------------------------------------
@@ -768,11 +1138,6 @@ def pick_links(
     candidates: list[dict[str, str]], org_hint: str
 ) -> list[dict[str, Any]]:
     """LLM call #1 (cheap): choose up to MAX_PAGES URLs worth reading."""
-    raise NotImplementedError
-
-
-def pick_links_by_keyword(candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
-    """Deterministic fallback used when pick_links fails."""
     raise NotImplementedError
 
 
@@ -883,6 +1248,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="stop after link discovery and print the candidates (no LLM calls)",
     )
     parser.add_argument(
+        "--crawl-only", action="store_true",
+        help="crawl and parse pages with the keyword picker, printing chars "
+             "per page (no LLM calls)",
+    )
+    parser.add_argument(
         "--verbose", action="store_true", help="debug logging"
     )
     args = parser.parse_args(argv)
@@ -897,16 +1267,20 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(message)s",
     )
-    if args.links_only:
+    if args.links_only or args.crawl_only:
         if not args.org:
-            log.error("--links-only needs a single organisation, not --batch")
+            log.error("debug modes take a single organisation, not --batch")
             return 2
-        return show_candidates(args.org)
+        return show_candidates(
+            args.org, crawl=args.crawl_only, use_browser=not args.no_browser
+        )
 
     raise NotImplementedError("full pipeline lands in a later milestone")
 
 
-def show_candidates(value: str) -> int:
+def show_candidates(
+    value: str, crawl: bool = False, use_browser: bool = True
+) -> int:
     """Debug view for the crawl half of the pipeline — no LLM, no cost."""
     if not looks_like_url(value):
         log.error("--links-only needs a URL for now; name resolution is next.")
@@ -939,6 +1313,38 @@ def show_candidates(value: str) -> int:
         print(f"\nfeed items    {len(found['feed_items'])}\n")
         for item in found["feed_items"]:
             print(f"  {(item['date'] or '?')[:31]:<31}  {(item['title'] or '-')[:70]}")
+
+    if not crawl:
+        print()
+        return 0
+
+    reserved = reserve_report_links(candidates)
+    print(f"\nreserved financial slots  {len(reserved)}")
+    for item in reserved:
+        print(f"  {item['url']}")
+
+    picked = pick_links_by_keyword(candidates)
+    print(f"\nkeyword picks             {len(picked)}")
+    for item in picked:
+        print(f"  {','.join(item['covers'])[:40]:<40}  {item['url']}")
+
+    collected = collect_documents(
+        home_url, result, candidates, picked, use_browser=use_browser
+    )
+    print(f"\ndocuments fetched         {len(collected['documents'])}\n")
+    total = 0
+    for document in collected["documents"]:
+        total += document["chars"]
+        print(
+            f"  {document['type']:<5} {document['method']:<8} "
+            f"{document['chars']:>7,} chars  {document['url'][:88]}"
+        )
+    print(f"\n  total                   {total:>7,} chars "
+          f"(budget {MAX_TOTAL_CHARS:,})")
+    if collected["failed_pages"]:
+        print(f"\nfailed                    {len(collected['failed_pages'])}")
+        for failure in collected["failed_pages"]:
+            print(f"  {failure['error'][:40]:<40}  {failure['url'][:70]}")
     print()
     return 0
 
