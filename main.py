@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import logging
+import os
 from html import unescape
 import re
 import time
@@ -34,10 +35,12 @@ from typing import Any, Literal
 from urllib import robotparser
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
-import pymupdf
+import anthropic
 import httpx
+import pymupdf
 import trafilatura
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
@@ -59,6 +62,7 @@ PRICES: dict[str, tuple[float, float]] = {
 # Crawl limits.
 MAX_PAGES = 6                # pages fetched per org, on top of the homepage
 RESERVED_REPORT_SLOTS = 2    # of MAX_PAGES, held for financial documents
+RESERVE_MIN_SCORE = 4        # a reserved slot needs an unambiguous signal
 MAX_REPORT_PDFS = 2          # report PDFs followed one level below a page
 MAX_PDF_PAGES = 16           # pages read from any single PDF
 MAX_PDF_HEAD_PAGES = 6       # always read this many from the front
@@ -77,6 +81,7 @@ USER_AGENT = (
     "FullerFocusScraper/0.1 (+nonprofit research bot; contact: hello@example.com)"
 )
 MIN_TEXT_CHARS = 500         # below this, try the Playwright fallback
+MIN_HOME_LINKS = 10          # below this, the homepage is JS-rendered
 MAX_DOWNLOAD_BYTES = 10_000_000   # hard cap on any single response body
 MAX_SITEMAPS = 5                  # child sitemaps read from a sitemap index
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
@@ -170,6 +175,23 @@ WEAK_REPORT_TERMS = (
     "financial", "audit", "impact report", "impact-report", "annual", "irs",
     "tax return", "tax-return", "transparency", "accountability", "report",
 )
+
+# URL path segments that mark a genuine financial page. Checked as whole
+# segments, so "/about/financials" qualifies but "/financial-literacy" — a
+# course Khan Academy teaches — does not.
+FINANCIAL_PATH_SEGMENTS = frozenset({
+    "financials", "financial", "finances", "financial-information",
+    "financial-statements", "financial-reports", "annual-report",
+    "annual-reports", "annualreport", "annual-reports-and-financials",
+    "990", "990s", "990-forms", "form-990", "tax-documents", "tax-returns",
+    "reports-and-financials", "accounts",
+})
+
+# The subset that means actual tax filings, which outrank a financials hub.
+TAX_FORM_SEGMENTS = frozenset({
+    "990", "990s", "990-forms", "form-990", "form-990s", "tax-documents",
+    "tax-returns", "irs-form-990",
+})
 
 # Phrases that mark the pages of a PDF actually worth reading. Annual reports
 # put the numbers at the back, well past any fixed page cap.
@@ -905,15 +927,25 @@ def report_score(text: str, url: str) -> int:
     "2025 Annual Report (PDF)" outranks a 2016 one.
     """
     blob = f"{text} {url}".lower().replace("%20", " ")
+    segments = {seg for seg in urlsplit(url.lower()).path.split("/") if seg}
+    strong = any(term in blob for term in STRONG_REPORT_TERMS) or bool(
+        segments & FINANCIAL_PATH_SEGMENTS
+    )
     # Presence, not count: "990" and "form 990" are the same signal seen twice.
-    score = 4 if any(term in blob for term in STRONG_REPORT_TERMS) else 0
+    score = 4 if strong else 0
     score += 1 if any(term in blob for term in WEAK_REPORT_TERMS) else 0
     if not score:
         return 0
-    if urlsplit(url.lower()).path.endswith(".pdf"):
+    # A 990 or tax-filing page beats a general financials page.
+    if segments & TAX_FORM_SEGMENTS or "990" in blob:
         score += 2
-    # Recency outweighs wording: the current year's filing is the one worth
-    # reading, even when an older one happens to be better labelled.
+    if not urlsplit(url.lower()).path.endswith(".pdf"):
+        return score
+    score += 2
+    # Recency outweighs wording, but only for documents: the current year's
+    # filing is the one worth reading, even when an older one happens to be
+    # better labelled. On an HTML page a year means the opposite — an
+    # archived edition — so no bonus applies there.
     years = [int(y) for y in re.findall(r"(?:19|20)\d{2}", blob)]
     if years:
         this_year = int(time.strftime("%Y"))
@@ -972,7 +1004,12 @@ def pick_links_by_keyword(candidates: list[dict[str, str]]) -> list[dict[str, An
 def reserve_report_links(candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
     """Financial documents, chosen in code and never left to the model."""
     reserved: list[dict[str, Any]] = []
-    for link in rank_reports(candidates)[:RESERVED_REPORT_SLOTS]:
+    strong = [
+        link
+        for link in rank_reports(candidates)
+        if report_score(link["text"], link["url"]) >= RESERVE_MIN_SCORE
+    ]
+    for link in strong[:RESERVED_REPORT_SLOTS]:
         reserved.append(
             {
                 "url": link["url"],
@@ -1017,9 +1054,40 @@ def _parse_document(
     }
 
 
+def fetch_homepage(url: str, use_browser: bool = True) -> dict[str, Any]:
+    """Fetch the homepage, rendering it when the raw HTML is unusable.
+
+    This has to happen before link discovery, not after: khanacademy.org's
+    homepage is 219k chars of JavaScript with zero anchors in the raw HTML
+    and 232 once rendered. Discovering links from the un-rendered page finds
+    nothing worth reading.
+    """
+    result = fetch(url)
+    if not result["ok"]:
+        return {"ok": False, "url": url, "error": result["error"]}
+
+    final_url = result["url"]
+    html = result["content"].decode("utf-8", "replace")
+    method = "http"
+    link_count = len(extract_links(html, final_url))
+    if use_browser and (
+        link_count < MIN_HOME_LINKS
+        or len(html_to_text(html, final_url)) < MIN_TEXT_CHARS
+    ):
+        log.info(
+            "homepage looks JS-rendered (%d links in raw html), using browser",
+            link_count,
+        )
+        try:
+            html = render_with_browser(final_url)
+            method = "browser"
+        except Exception as exc:
+            log.warning("browser render failed for %s: %s", final_url, exc)
+    return {"ok": True, "url": final_url, "html": html, "method": method}
+
+
 def collect_documents(
-    home_url: str,
-    home_result: dict[str, Any],
+    home: dict[str, Any],
     candidates: list[dict[str, str]],
     picked: list[dict[str, Any]],
     use_browser: bool = True,
@@ -1030,12 +1098,18 @@ def collect_documents(
     a fetched HTML page links to an annual report or 990 — which is where they
     almost always live, not on the homepage — the best one is pulled in too.
     """
-    documents: list[dict[str, Any]] = []
+    home_url = home["url"]
+    documents: list[dict[str, Any]] = [
+        {
+            "url": home_url,
+            "type": "html",
+            "method": home["method"],
+            "text": html_to_text(home["html"], home_url, keep_footer=True),
+            "covers": ["about"],
+            "html": home["html"],  # kept so report PDFs on it can be followed
+        }
+    ]
     failed: list[dict[str, str]] = []
-    home_doc = _parse_document(
-        home_result, {"covers": ["about"], "is_home": True}, use_browser
-    )
-    documents.append(home_doc)
 
     queue = reserve_report_links(candidates)
     seen = {normalise_url(home_url).rstrip("/")}
@@ -1134,11 +1208,145 @@ def apply_budget(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # 7. LLM CALLS
 # ---------------------------------------------------------------------------
 
+_CLIENT: anthropic.Anthropic | None = None
+
+
+def client() -> anthropic.Anthropic:
+    """The Anthropic client, built once from ANTHROPIC_API_KEY in .env."""
+    global _CLIENT
+    if _CLIENT is None:
+        load_dotenv(Path(__file__).with_name(".env"))
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise SystemExit(
+                "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and "
+                "add your key."
+            )
+        _CLIENT = anthropic.Anthropic()
+    return _CLIENT
+
+
+SchemaGroup = Literal[
+    "about", "programs", "leadership", "careers", "news", "events", "rfps",
+    "campaign", "partners", "contact", "financials",
+]
+
+
+class LinkChoice(BaseModel):
+    """One chosen link, referenced by its number in the list we sent."""
+
+    index: int
+    covers: list[SchemaGroup]
+    reason: str
+
+
+class LinkSelection(BaseModel):
+    picks: list[LinkChoice]
+
+
+PICK_LINKS_SYSTEM = """\
+You choose which pages of a nonprofit's website are worth reading in full.
+
+The pages you pick are read by a later step that fills in a structured profile
+for a company selling services to this nonprofit. It needs: mission, programs,
+leadership and staff, contact details, open roles, RFPs or procurement notices,
+leadership changes, capital projects, fundraising campaigns, recent news,
+events, funders and partners, and memberships.
+
+Annual reports, 990s and financial statements are already collected separately.
+Do not spend a pick on them.
+
+Rules:
+- Pick at most {limit} links, fewer if the rest are not worth reading.
+- Prefer one page that covers several groups over several narrow pages.
+- Prefer hub and overview pages ("Our team", "Newsroom") over a single blog
+  post or one person's profile.
+- Skip pages that only serve the public (donation forms, shops, find-help
+  tools, course content) - they say nothing about the organisation.
+- Return each pick's index number exactly as given.
+"""
+
+
+def shortlist_candidates(
+    candidates: list[dict[str, str]], limit: int = MAX_LINK_CANDIDATES
+) -> list[dict[str, str]]:
+    """Trim the candidate list, keeping keyword-relevant links first.
+
+    A big sitemap can push the list past the prompt cap, and the useful pages
+    are rarely the first ones alphabetically.
+    """
+    if len(candidates) <= limit:
+        return candidates
+    relevant, rest = [], []
+    for link in candidates:
+        bucket = relevant if groups_for(link["text"], link["url"]) else rest
+        bucket.append(link)
+    return (relevant + rest)[:limit]
+
+
 def pick_links(
-    candidates: list[dict[str, str]], org_hint: str
+    candidates: list[dict[str, str]], org_hint: str, limit: int = MAX_PAGES
 ) -> list[dict[str, Any]]:
-    """LLM call #1 (cheap): choose up to MAX_PAGES URLs worth reading."""
-    raise NotImplementedError
+    """LLM call #1 (cheap): choose up to `limit` URLs worth reading.
+
+    The model returns list indices rather than URLs: it cannot invent a page
+    that way, and the reply is a fraction of the output tokens.
+
+    Falls back to the keyword picker if the call fails twice.
+    """
+    shortlist = shortlist_candidates(candidates)
+    if not shortlist:
+        return []
+    listing = "\n".join(
+        f"{i}. {link['text'] or '(no text)'} | {link['url']}"
+        for i, link in enumerate(shortlist)
+    )
+    prompt = (
+        f"Organisation: {org_hint}\n\nCandidate links:\n{listing}\n\n"
+        f"Choose at most {limit}."
+    )
+
+    for attempt in range(2):
+        try:
+            response = client().messages.parse(
+                model=LINK_MODEL,
+                max_tokens=1500,
+                system=PICK_LINKS_SYSTEM.format(limit=limit),
+                messages=[{"role": "user", "content": prompt}],
+                output_format=LinkSelection,
+            )
+            record_usage(
+                LINK_MODEL, response.usage.input_tokens, response.usage.output_tokens
+            )
+            selection = response.parsed_output
+            if selection is None:
+                raise ValueError("no parsed output")
+            picks = []
+            for choice in selection.picks[:limit]:
+                if not 0 <= choice.index < len(shortlist):
+                    log.debug("picker returned out-of-range index %d", choice.index)
+                    continue
+                link = shortlist[choice.index]
+                picks.append(
+                    {
+                        "url": link["url"],
+                        "covers": list(choice.covers),
+                        "reason": choice.reason,
+                    }
+                )
+            if picks:
+                return picks
+            if not selection.picks:
+                # A deliberate "nothing here worth reading" is a valid answer
+                # — falling back to keywords would only pick noise.
+                log.info("link picker found nothing worth reading")
+                return []
+            log.warning("link picker returned only invalid indices (attempt %d)",
+                        attempt + 1)
+        except Exception as exc:
+            log.warning("link picker failed (attempt %d): %s", attempt + 1, exc)
+
+    log.info("falling back to keyword link picking")
+    return pick_links_by_keyword(candidates)[:limit]
 
 
 def extract(documents: list[dict[str, Any]], feed_items: list[dict[str, Any]]) -> ExtractionResult:
@@ -1253,13 +1461,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="disable the Playwright fallback for JavaScript-heavy sites",
     )
     parser.add_argument(
-        "--links-only", action="store_true",
-        help="stop after link discovery and print the candidates (no LLM calls)",
+        "--stage", choices=("links", "pick", "crawl"),
+        help="stop early and print that stage: 'links' lists candidates, "
+             "'pick' adds link selection, 'crawl' adds fetching and parsing",
     )
     parser.add_argument(
-        "--crawl-only", action="store_true",
-        help="crawl and parse pages with the keyword picker, printing chars "
-             "per page (no LLM calls)",
+        "--no-llm", action="store_true",
+        help="use the keyword picker instead of the model (no API cost)",
     )
     parser.add_argument(
         "--verbose", action="store_true", help="debug logging"
@@ -1276,36 +1484,41 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(message)s",
     )
-    if args.links_only or args.crawl_only:
+    # The SDK and its HTTP layer log every request at INFO, which drowns ours.
+    for noisy in ("httpx", "httpx2", "anthropic", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    if args.stage:
         if not args.org:
-            log.error("debug modes take a single organisation, not --batch")
+            log.error("--stage takes a single organisation, not --batch")
             return 2
-        return show_candidates(
-            args.org, crawl=args.crawl_only, use_browser=not args.no_browser
+        return show_stage(
+            args.org, stage=args.stage, use_browser=not args.no_browser,
+            use_llm=not args.no_llm,
         )
 
     raise NotImplementedError("full pipeline lands in a later milestone")
 
 
-def show_candidates(
-    value: str, crawl: bool = False, use_browser: bool = True
+def show_stage(
+    value: str, stage: str = "links", use_browser: bool = True,
+    use_llm: bool = True,
 ) -> int:
-    """Debug view for the crawl half of the pipeline — no LLM, no cost."""
+    """Debug view of one pipeline stage, stopping before extraction."""
     if not looks_like_url(value):
-        log.error("--links-only needs a URL for now; name resolution is next.")
+        log.error("--stage needs a URL for now; name resolution is next.")
         return 2
     home_url = normalise_url(value)
     log.info("fetching %s", home_url)
-    result = fetch(home_url)
-    if not result["ok"]:
-        log.error("could not fetch homepage: %s", result["error"])
+    home = fetch_homepage(home_url, use_browser=use_browser)
+    if not home["ok"]:
+        log.error("could not fetch homepage: %s", home["error"])
         return 1
 
-    home_url = result["url"]
-    home_html = result["content"].decode("utf-8", "replace")
+    home_url, home_html = home["url"], home["html"]
     found = discover_candidates(home_url, home_html)
 
-    print(f"\nhomepage      {home_url}  ({len(home_html):,} chars html)")
+    print(f"\nhomepage      {home_url}  ({len(home_html):,} chars html, "
+          f"via {home['method']})")
     print(f"robots.txt    {'present' if _robots(origin_of(home_url)) else 'none'}")
     print(f"sitemap urls  {found['sitemap_count']}")
     print(f"feed          {found['feed_url'] or 'none'}")
@@ -1323,7 +1536,7 @@ def show_candidates(
         for item in found["feed_items"]:
             print(f"  {(item['date'] or '?')[:31]:<31}  {(item['title'] or '-')[:70]}")
 
-    if not crawl:
+    if stage == "links":
         print()
         return 0
 
@@ -1332,13 +1545,28 @@ def show_candidates(
     for item in reserved:
         print(f"  {item['url']}")
 
-    picked = pick_links_by_keyword(candidates)
-    print(f"\nkeyword picks             {len(picked)}")
+    budget = max(1, MAX_PAGES - len(reserved))
+    if use_llm:
+        picked = pick_links(candidates, home_url, limit=budget)
+        label = f"model picks ({LINK_MODEL})"
+    else:
+        picked = pick_links_by_keyword(candidates)[:budget]
+        label = "keyword picks"
+    print(f"\n{label}  {len(picked)}")
     for item in picked:
-        print(f"  {','.join(item['covers'])[:40]:<40}  {item['url']}")
+        print(f"  {','.join(item['covers'])[:34]:<34}  {item['url'][:78]}")
+        print(f"  {'':34}  -> {item['reason'][:78]}")
+
+    if USAGE:
+        print(f"\ntokens                    {USAGE}")
+        print(f"cost so far               ${usage_cost_usd(USAGE):.5f}")
+
+    if stage == "pick":
+        print()
+        return 0
 
     collected = collect_documents(
-        home_url, result, candidates, picked, use_browser=use_browser
+        home, candidates, picked, use_browser=use_browser
     )
     print(f"\ndocuments fetched         {len(collected['documents'])}\n")
     total = 0
