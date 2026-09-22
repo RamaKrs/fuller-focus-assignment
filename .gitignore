@@ -1,0 +1,17 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# run output (examples/ is committed instead)
+output/
+.venv/
+
+# internal build spec + the assignment brief (kept locally, not published)
+CLAUDE.md
+*.pdf
