@@ -1,0 +1,238 @@
+{
+  "organization": {
+    "name": "charity: water",
+    "website": "https://www.charitywater.org/",
+    "country": "United States",
+    "hq_city": "Franklin, TN",
+    "ein": "22-3936753",
+    "year_founded": 2006
+  },
+  "fit": {
+    "mission": "To bring clean and safe water to people around the world.",
+    "programs": [
+      {
+        "name": "Uganda water projects",
+        "description": "In FY2025, charity: water funded 579 water projects in Uganda, serving an estimated 170,110 people, working with eight local partners."
+      },
+      {
+        "name": "Ethiopia water projects",
+        "description": "In FY2025, charity: water funded 391 water projects in Ethiopia, serving an estimated 133,900 people, working with four local partners."
+      },
+      {
+        "name": "Madagascar water projects",
+        "description": "In FY2025, charity: water funded 5,125 water projects in Madagascar, serving an estimated 78,111 people, working with three local partners."
+      }
+    ],
+    "cause_area": {
+      "ntee_code": "P80",
+      "major_group": "Human Services",
+      "source": "irs_ntee"
+    },
+    "geographic_scope": "international"
+  },
+  "financials": {
+    "years": [
+      {
+        "fiscal_year": 2025,
+        "revenue": 82267852.0,
+        "expenses": 88718803.0,
+        "total_assets": 144138029.0
+      },
+      {
+        "fiscal_year": 2022,
+        "revenue": 96818300.0,
+        "expenses": 101269828.0,
+        "total_assets": 175942434.0
+      },
+      {
+        "fiscal_year": 2021,
+        "revenue": 101611139.0,
+        "expenses": 98791943.0,
+        "total_assets": 173056021.0
+      },
+      {
+        "fiscal_year": 2020,
+        "revenue": 92858715.0,
+        "expenses": 62891317.0,
+        "total_assets": 137299160.0
+      },
+      {
+        "fiscal_year": 2019,
+        "revenue": 90131472.0,
+        "expenses": 74500794.0,
+        "total_assets": 116342480.0
+      }
+    ],
+    "revenue_growth_pct": -1.5,
+    "size_bucket": "10M-100M",
+    "employee_count": 126,
+    "auditor_firm": "KPMG LLP",
+    "source": "propublica",
+    "propublica_match": {
+      "name": "Charity Global Inc",
+      "ein": "223936753",
+      "match_score": 100.0
+    }
+  },
+  "contacts": {
+    "leaders": [
+      {
+        "name": "Scott Harrison",
+        "title": "Founder"
+      },
+      {
+        "name": "Melissa Russell",
+        "title": "President"
+      },
+      {
+        "name": "Ben Greene",
+        "title": "Chief Revenue Officer"
+      },
+      {
+        "name": "Brian Hoyer",
+        "title": "Chief Programs Officer"
+      },
+      {
+        "name": "Christa Stelzmuller",
+        "title": "Chief Technology Officer"
+      },
+      {
+        "name": "John Passauer",
+        "title": "Chief Financial Officer"
+      },
+      {
+        "name": "Ceena Johnson",
+        "title": "General Counsel"
+      }
+    ],
+    "email": null,
+    "phone": "(646) 688-2323",
+    "contact_url": null
+  },
+  "buying_signals": {
+    "open_roles": [],
+    "executive_search_open": false,
+    "rfps": [],
+    "leadership_changes": [],
+    "capital_projects": [
+      {
+        "description": "Experience Lab, a hands-on visitor space, officially opened to the public in March 2025.",
+        "status": "completed",
+        "source_url": "https://assets.ctfassets.net/2w85ks0ylymt/UTt6M0fD1BknovqEnrZIt/99ffe4fe0cbf50c72ec5a0111c7d58e6/RPP-11_-_FY_2025_Annual_Report_Final.pdf"
+      }
+    ],
+    "campaign": {
+      "name": "My Ten Nights",
+      "goal": null,
+      "raised": 150000.0,
+      "status": "completed",
+      "source_url": "https://assets.ctfassets.net/2w85ks0ylymt/UTt6M0fD1BknovqEnrZIt/99ffe4fe0cbf50c72ec5a0111c7d58e6/RPP-11_-_FY_2025_Annual_Report_Final.pdf"
+    }
+  },
+  "timing": {
+    "recent_news": [],
+    "events": [
+      {
+        "name": "Scott Harrison's 50th Birthday Celebration",
+        "type": "other",
+        "date": null,
+        "url": "https://assets.ctfassets.net/2w85ks0ylymt/UTt6M0fD1BknovqEnrZIt/99ffe4fe0cbf50c72ec5a0111c7d58e6/RPP-11_-_FY_2025_Annual_Report_Final.pdf"
+      }
+    ]
+  },
+  "network": {
+    "funders": [],
+    "memberships": []
+  },
+  "meta": {
+    "input": "https://www.charitywater.org",
+    "resolved_url": "https://www.charitywater.org/",
+    "resolution_method": "url_given",
+    "crawled_at": "2026-09-22T19:43:36+00:00",
+    "pages_crawled": [
+      {
+        "url": "https://www.charitywater.org/",
+        "type": "html",
+        "method": "http",
+        "chars": 2628
+      },
+      {
+        "url": "https://www.charitywater.org/about/financials",
+        "type": "html",
+        "method": "http",
+        "chars": 1029
+      },
+      {
+        "url": "https://assets.ctfassets.net/2w85ks0ylymt/UTt6M0fD1BknovqEnrZIt/99ffe4fe0cbf50c72ec5a0111c7d58e6/RPP-11_-_FY_2025_Annual_Report_Final.pdf",
+        "type": "pdf",
+        "method": "http",
+        "chars": 5475
+      },
+      {
+        "url": "https://assets.ctfassets.net/2w85ks0ylymt/7i5BE5kTaSkE9HkKITWGRi/dae67f9c05b3e0624121e52eb5291599/FY25_Form_990_PIC.pdf",
+        "type": "pdf",
+        "method": "http",
+        "chars": 15000
+      },
+      {
+        "url": "https://www.charitywater.org/our-work",
+        "type": "html",
+        "method": "http",
+        "chars": 676
+      },
+      {
+        "url": "https://www.charitywater.org/about/executive-team",
+        "type": "html",
+        "method": "http",
+        "chars": 4815
+      },
+      {
+        "url": "https://www.charitywater.org/about/jobs",
+        "type": "html",
+        "method": "http",
+        "chars": 703
+      }
+    ],
+    "failed_pages": [],
+    "field_sources": {
+      "organization": [
+        "https://www.charitywater.org/",
+        "https://assets.ctfassets.net/2w85ks0ylymt/7i5BE5kTaSkE9HkKITWGRi/dae67f9c05b3e0624121e52eb5291599/FY25_Form_990_PIC.pdf"
+      ],
+      "fit": [
+        "https://www.charitywater.org/",
+        "https://www.charitywater.org/our-work",
+        "https://assets.ctfassets.net/2w85ks0ylymt/7i5BE5kTaSkE9HkKITWGRi/dae67f9c05b3e0624121e52eb5291599/FY25_Form_990_PIC.pdf"
+      ],
+      "financials": [
+        "https://www.charitywater.org/about/financials",
+        "https://assets.ctfassets.net/2w85ks0ylymt/7i5BE5kTaSkE9HkKITWGRi/dae67f9c05b3e0624121e52eb5291599/FY25_Form_990_PIC.pdf",
+        "https://assets.ctfassets.net/2w85ks0ylymt/UTt6M0fD1BknovqEnrZIt/99ffe4fe0cbf50c72ec5a0111c7d58e6/RPP-11_-_FY_2025_Annual_Report_Final.pdf"
+      ],
+      "contacts": [
+        "https://www.charitywater.org/about/executive-team",
+        "https://assets.ctfassets.net/2w85ks0ylymt/7i5BE5kTaSkE9HkKITWGRi/dae67f9c05b3e0624121e52eb5291599/FY25_Form_990_PIC.pdf"
+      ],
+      "buying_signals": [
+        "https://assets.ctfassets.net/2w85ks0ylymt/UTt6M0fD1BknovqEnrZIt/99ffe4fe0cbf50c72ec5a0111c7d58e6/RPP-11_-_FY_2025_Annual_Report_Final.pdf"
+      ],
+      "timing": [
+        "https://assets.ctfassets.net/2w85ks0ylymt/UTt6M0fD1BknovqEnrZIt/99ffe4fe0cbf50c72ec5a0111c7d58e6/RPP-11_-_FY_2025_Annual_Report_Final.pdf"
+      ]
+    },
+    "tokens": {
+      "claude-haiku-4-5": {
+        "input": 4467,
+        "output": 153
+      },
+      "claude-sonnet-5": {
+        "input": 16140,
+        "output": 7143
+      }
+    },
+    "cost_usd": 0.108942,
+    "warnings": [
+      "kept 2025 from the site: ProPublica has no structured data for those years"
+    ]
+  }
+}

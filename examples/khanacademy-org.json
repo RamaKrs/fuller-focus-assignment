@@ -1,0 +1,257 @@
+{
+  "organization": {
+    "name": "Khan Academy",
+    "website": "https://www.khanacademy.org/",
+    "country": null,
+    "hq_city": null,
+    "ein": null,
+    "year_founded": null
+  },
+  "fit": {
+    "mission": "Our mission is to provide a free, world-class education to anyone, anywhere.",
+    "programs": [
+      {
+        "name": "Khan Academy Districts",
+        "description": "District partners get tools and support to turn practice into progress, making students 6x more likely to reach recommended practice levels."
+      },
+      {
+        "name": "Khan Academy Kids",
+        "description": "A free app for early learners ages 2-8 covering foundational topics for preschool through second grade."
+      },
+      {
+        "name": "Khanmigo",
+        "description": "Gives students always-available tutoring and gives teachers and parents tools to support learning."
+      },
+      {
+        "name": "Student assessment experience",
+        "description": "Assessments that move beyond measuring progress to help students get support to move forward."
+      }
+    ],
+    "cause_area": {
+      "ntee_code": "B99",
+      "major_group": "Education",
+      "source": "irs_ntee"
+    },
+    "geographic_scope": "international"
+  },
+  "financials": {
+    "years": [
+      {
+        "fiscal_year": 2023,
+        "revenue": 98267721.0,
+        "expenses": 68127201.0,
+        "total_assets": 136250357.0
+      },
+      {
+        "fiscal_year": 2022,
+        "revenue": 53234817.0,
+        "expenses": 58157502.0,
+        "total_assets": 105255724.0
+      },
+      {
+        "fiscal_year": 2021,
+        "revenue": 59263743.0,
+        "expenses": 53879015.0,
+        "total_assets": 115035528.0
+      },
+      {
+        "fiscal_year": 2020,
+        "revenue": 79340879.0,
+        "expenses": 56776201.0,
+        "total_assets": 115080607.0
+      },
+      {
+        "fiscal_year": 2019,
+        "revenue": 46244725.0,
+        "expenses": 54324592.0,
+        "total_assets": 86675767.0
+      }
+    ],
+    "revenue_growth_pct": 20.7,
+    "size_bucket": "10M-100M",
+    "employee_count": null,
+    "auditor_firm": null,
+    "source": "propublica",
+    "propublica_match": {
+      "name": "Khan Academy Inc",
+      "ein": "261544963",
+      "match_score": 100.0
+    }
+  },
+  "contacts": {
+    "leaders": [
+      {
+        "name": "James",
+        "title": null
+      }
+    ],
+    "email": null,
+    "phone": null,
+    "contact_url": null
+  },
+  "buying_signals": {
+    "open_roles": [],
+    "executive_search_open": false,
+    "rfps": [],
+    "leadership_changes": [],
+    "capital_projects": [],
+    "campaign": null
+  },
+  "timing": {
+    "recent_news": [
+      {
+        "title": "Five Things School Leaders Do That Make SAT Practice Actually Work",
+        "date": "2026-09-21",
+        "url": "https://blog.khanacademy.org/five-things-school-leaders-do-that-make-sat-practice-actually-work/"
+      },
+      {
+        "title": "Revised and Ready: Khan Academy’s Florida B.E.S.T. Geometry Course",
+        "date": "2026-09-18",
+        "url": "https://blog.khanacademy.org/florida-best-geometry-course/"
+      },
+      {
+        "title": "Family Engagement That Actually Moves the Needle in Early Elementary",
+        "date": "2026-09-17",
+        "url": "https://blog.khanacademy.org/family-engagement-early-elementary-research-tactics/"
+      },
+      {
+        "title": "Free Texas Courses and Study Plans: Three Ways Families Can Get Started",
+        "date": "2026-09-17",
+        "url": "https://blog.khanacademy.org/free-texas-courses-study-plans/"
+      },
+      {
+        "title": "More than a Score: What Makes an Assessment System Truly Useful",
+        "date": "2026-09-14",
+        "url": "https://blog.khanacademy.org/effective-assessment-system/"
+      }
+    ],
+    "events": []
+  },
+  "network": {
+    "funders": [
+      {
+        "name": "Ann and John Doerr",
+        "amount": null
+      },
+      {
+        "name": "Bill and Melinda Gates Foundation",
+        "amount": null
+      },
+      {
+        "name": "Reed Hastings",
+        "amount": null
+      },
+      {
+        "name": "Fundação Lemann",
+        "amount": null
+      },
+      {
+        "name": "The O'Sullivan Foundation",
+        "amount": null
+      },
+      {
+        "name": "Fundación Carlos Slim",
+        "amount": null
+      },
+      {
+        "name": "Tata Trusts",
+        "amount": null
+      },
+      {
+        "name": "Valhalla Foundation",
+        "amount": null
+      }
+    ],
+    "memberships": []
+  },
+  "meta": {
+    "input": "https://www.khanacademy.org",
+    "resolved_url": "https://www.khanacademy.org/",
+    "resolution_method": "url_given",
+    "crawled_at": "2026-09-22T19:45:50+00:00",
+    "pages_crawled": [
+      {
+        "url": "https://www.khanacademy.org/",
+        "type": "html",
+        "method": "browser",
+        "chars": 2453
+      },
+      {
+        "url": "https://www.khanacademy.org/about",
+        "type": "html",
+        "method": "http",
+        "chars": 3468
+      },
+      {
+        "url": "https://www.khanacademy.org/about/impact",
+        "type": "html",
+        "method": "http",
+        "chars": 1626
+      },
+      {
+        "url": "https://www.khanacademy.org/about/leadership",
+        "type": "html",
+        "method": "http",
+        "chars": 1766
+      },
+      {
+        "url": "https://www.khanacademy.org/about/careers",
+        "type": "html",
+        "method": "http",
+        "chars": 2821
+      },
+      {
+        "url": "https://blog.khanacademy.org/news/",
+        "type": "html",
+        "method": "http",
+        "chars": 790
+      },
+      {
+        "url": "https://www.khanacademy.org/about/supporters",
+        "type": "html",
+        "method": "http",
+        "chars": 15000
+      },
+      {
+        "url": "https://blog.khanacademy.org/feed",
+        "type": "rss",
+        "method": "http",
+        "chars": 10
+      }
+    ],
+    "failed_pages": [],
+    "field_sources": {
+      "organization": [
+        "https://www.khanacademy.org/",
+        "https://www.khanacademy.org/about"
+      ],
+      "fit": [
+        "https://www.khanacademy.org/about",
+        "https://www.khanacademy.org/about/impact"
+      ],
+      "contacts": [
+        "https://www.khanacademy.org/about/leadership"
+      ],
+      "timing": [
+        "https://blog.khanacademy.org/news/"
+      ],
+      "network": [
+        "https://www.khanacademy.org/about/supporters"
+      ]
+    },
+    "tokens": {
+      "claude-haiku-4-5": {
+        "input": 5015,
+        "output": 172
+      },
+      "claude-sonnet-5": {
+        "input": 17385,
+        "output": 2388
+      }
+    },
+    "cost_usd": 0.064525,
+    "warnings": [
+      "no annual report, 990 or financials page found"
+    ]
+  }
+}

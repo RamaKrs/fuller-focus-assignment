@@ -214,9 +214,16 @@ TAX_FORM_SEGMENTS = frozenset({
 # Phrases that mark the pages of a PDF actually worth reading. Annual reports
 # put the numbers at the back, well past any fixed page cap.
 PDF_FINANCIAL_MARKERS = (
+    # US (990 / US GAAP)
     "total revenue", "total expenses", "statement of activities",
     "statement of financial position", "independent auditor", "net assets",
     "total assets", "functional expenses", "balance sheet", "total support",
+    # UK and other charity accounting. Trussell's annual report uses none of
+    # the US terms: its figures sit under "total income" and "statement of
+    # financial activities" on page 101 of 150.
+    "total income", "total expenditure", "statement of financial activities",
+    "income and expenditure", "total funds", "unrestricted funds",
+    "statement of comprehensive income", "total liabilities",
 )
 
 # Keyword -> schema group, for the deterministic link picker (the fallback
@@ -1110,20 +1117,35 @@ def pdf_to_text(data: bytes) -> str:
 
     with document:
         total = document.page_count
-        chosen = list(range(min(MAX_PDF_HEAD_PAGES, total)))
-        for index in range(len(chosen), total):
-            if len(chosen) >= MAX_PDF_PAGES:
-                break
+        head = list(range(min(MAX_PDF_HEAD_PAGES, total)))
+
+        # Score the rest rather than taking the first pages that match. A
+        # contents page listing "Independent auditor's report" matches one
+        # marker and no figures; the statement itself matches several and is
+        # full of numbers. Trussell's 150-page report put its accounts on
+        # page 101, well past anything a first-match scan would reach.
+        scored: list[tuple[int, int]] = []
+        for index in range(len(head), total):
             try:
                 page_text = document[index].get_text()
             except Exception:
                 continue
             low = page_text.lower()
-            if any(marker in low for marker in PDF_FINANCIAL_MARKERS):
-                chosen.append(index)
+            markers = sum(1 for marker in PDF_FINANCIAL_MARKERS if marker in low)
+            if not markers:
+                continue
+            figures = len(re.findall(r"\d[\d,]{3,}", page_text))
+            scored.append((markers * 10 + min(figures, 20), index))
 
+        scored.sort(key=lambda pair: (-pair[0], pair[1]))
+        extra = [index for _, index in scored[: max(0, MAX_PDF_PAGES - len(head))]]
+
+        # Head pages first, then financial pages strongest first. The
+        # per-document character cap truncates the tail, so this spends the
+        # budget on the best statement pages rather than on whatever happened
+        # to come last in the document.
         parts = []
-        for index in chosen:
+        for index in head + extra:
             try:
                 page_text = " ".join(document[index].get_text().split())
             except Exception as exc:

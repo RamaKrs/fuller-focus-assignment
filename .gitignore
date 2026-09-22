@@ -8,7 +8,7 @@ __pycache__/
 venv/
 *.egg-info/
 
-# run output (examples/ is committed instead)
+# run output; examples/ is committed instead
 output/
 .venv/
 

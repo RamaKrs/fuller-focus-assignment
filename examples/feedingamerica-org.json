@@ -1,0 +1,206 @@
+{
+  "organization": {
+    "name": "Feeding America",
+    "website": "https://www.feedingamerica.org/",
+    "country": "United States",
+    "hq_city": "Chicago, IL",
+    "ein": "36-3673599",
+    "year_founded": 1988
+  },
+  "fit": {
+    "mission": "Our mission is to advance change in America by ensuring equitable access to nutritious food for all in partnership with partner food banks, policymakers, supporters, and the communities we serve.",
+    "programs": [
+      {
+        "name": "Food Procurement",
+        "description": "Procurement and distribution of food to the nationwide network of food banks."
+      },
+      {
+        "name": "Member Services",
+        "description": "Support services provided to member food banks in the network."
+      },
+      {
+        "name": "Public Awareness and Education",
+        "description": "Programs raising awareness of hunger issues and educating the public."
+      },
+      {
+        "name": "Food Access",
+        "description": "Distributing meals through programs like mobile pantries and Kids Cafes."
+      },
+      {
+        "name": "Food Rescue",
+        "description": "Working with food companies and farmers to rescue food that would otherwise go to waste."
+      },
+      {
+        "name": "Disaster Response",
+        "description": "Providing food and emergency assistance before, during, and after disasters."
+      },
+      {
+        "name": "Hunger Research",
+        "description": "Conducting research such as the Map the Meal Gap study to understand food insecurity."
+      }
+    ],
+    "cause_area": {
+      "ntee_code": "K310",
+      "major_group": "Human Services",
+      "source": "irs_ntee"
+    },
+    "geographic_scope": "national"
+  },
+  "financials": {
+    "years": [
+      {
+        "fiscal_year": 2025,
+        "revenue": 5001395215.0,
+        "expenses": 5006685690.0,
+        "total_assets": 572495646.0
+      },
+      {
+        "fiscal_year": 2024,
+        "revenue": 4916912461.0,
+        "expenses": 5089874237.0,
+        "total_assets": 573702390.0
+      },
+      {
+        "fiscal_year": 2023,
+        "revenue": 4916912461.0,
+        "expenses": 4933690967.0,
+        "total_assets": 626129732.0
+      },
+      {
+        "fiscal_year": 2022,
+        "revenue": 4267241782.0,
+        "expenses": 4231609823.0,
+        "total_assets": 644823513.0
+      },
+      {
+        "fiscal_year": 2021,
+        "revenue": 4065318094.0,
+        "expenses": 3902891407.0,
+        "total_assets": 603767243.0
+      }
+    ],
+    "revenue_growth_pct": 5.3,
+    "size_bucket": "100M+",
+    "employee_count": 421,
+    "auditor_firm": "RSM US LLP",
+    "source": "propublica",
+    "propublica_match": {
+      "name": "Feeding America",
+      "ein": "363673599",
+      "match_score": 100.0
+    }
+  },
+  "contacts": {
+    "leaders": [
+      {
+        "name": "Claire Babineaux-Fontenot",
+        "title": "CEO"
+      }
+    ],
+    "email": null,
+    "phone": "1-800-771-2303",
+    "contact_url": null
+  },
+  "buying_signals": {
+    "open_roles": [],
+    "executive_search_open": false,
+    "rfps": [],
+    "leadership_changes": [],
+    "capital_projects": [],
+    "campaign": null
+  },
+  "timing": {
+    "recent_news": [],
+    "events": []
+  },
+  "network": {
+    "funders": [],
+    "memberships": []
+  },
+  "meta": {
+    "input": "Feeding America",
+    "resolved_url": "https://www.feedingamerica.org/",
+    "resolution_method": "llm_guess_verified",
+    "crawled_at": "2026-09-22T19:42:20+00:00",
+    "pages_crawled": [
+      {
+        "url": "https://www.feedingamerica.org/",
+        "type": "html",
+        "method": "http",
+        "chars": 3533
+      },
+      {
+        "url": "https://www.feedingamerica.org/about-us/financials/990-forms",
+        "type": "html",
+        "method": "http",
+        "chars": 3041
+      },
+      {
+        "url": "https://www.feedingamerica.org/sites/default/files/2025-05/2023-Feeding%20America-990%20%26%20990-T-Public%20Disclosure%20Copy.pdf",
+        "type": "pdf",
+        "method": "http",
+        "chars": 15000
+      },
+      {
+        "url": "https://www.feedingamerica.org/sites/default/files/2026-04/2024-Feeding%20America-990%2C%20990-T-Public%20Disclosure%20Copy.pdf",
+        "type": "pdf",
+        "method": "http",
+        "chars": 15000
+      },
+      {
+        "url": "https://www.feedingamerica.org/about-us/financials",
+        "type": "html",
+        "method": "http",
+        "chars": 584
+      },
+      {
+        "url": "https://www.feedingamerica.org/about-us",
+        "type": "html",
+        "method": "http",
+        "chars": 1851
+      },
+      {
+        "url": "https://www.feedingamerica.org/our-work",
+        "type": "html",
+        "method": "http",
+        "chars": 2909
+      }
+    ],
+    "failed_pages": [],
+    "field_sources": {
+      "organization": [
+        "https://www.feedingamerica.org/",
+        "https://www.feedingamerica.org/sites/default/files/2025-05/2023-Feeding%20America-990%20%26%20990-T-Public%20Disclosure%20Copy.pdf",
+        "https://www.feedingamerica.org/sites/default/files/2026-04/2024-Feeding%20America-990%2C%20990-T-Public%20Disclosure%20Copy.pdf"
+      ],
+      "fit": [
+        "https://www.feedingamerica.org/",
+        "https://www.feedingamerica.org/about-us",
+        "https://www.feedingamerica.org/our-work",
+        "https://www.feedingamerica.org/sites/default/files/2025-05/2023-Feeding%20America-990%20%26%20990-T-Public%20Disclosure%20Copy.pdf"
+      ],
+      "financials": [
+        "https://www.feedingamerica.org/sites/default/files/2025-05/2023-Feeding%20America-990%20%26%20990-T-Public%20Disclosure%20Copy.pdf",
+        "https://www.feedingamerica.org/sites/default/files/2026-04/2024-Feeding%20America-990%2C%20990-T-Public%20Disclosure%20Copy.pdf"
+      ],
+      "contacts": [
+        "https://www.feedingamerica.org/",
+        "https://www.feedingamerica.org/sites/default/files/2026-04/2024-Feeding%20America-990%2C%20990-T-Public%20Disclosure%20Copy.pdf"
+      ]
+    },
+    "tokens": {
+      "claude-haiku-4-5": {
+        "input": 5905,
+        "output": 143
+      },
+      "claude-sonnet-5": {
+        "input": 21766,
+        "output": 2553
+      }
+    },
+    "cost_usd": 0.075682,
+    "warnings": [
+      "kept 2025, 2024 from the site: ProPublica has no structured data for those years"
+    ]
+  }
+}

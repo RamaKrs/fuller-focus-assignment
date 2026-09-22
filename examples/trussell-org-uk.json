@@ -1,0 +1,200 @@
+{
+  "organization": {
+    "name": "The Trussell Trust",
+    "website": "https://www.trussell.org.uk/",
+    "country": "United Kingdom",
+    "hq_city": null,
+    "ein": null,
+    "year_founded": null
+  },
+  "fit": {
+    "mission": "We exist so everyone in the UK can be free from hunger. We work together to ensure no one needs a food bank to survive. Until that happens, we provide emergency food and practical support for people left without enough money to live on.",
+    "programs": [
+      {
+        "name": "Changing Communities",
+        "description": "Supporting food banks and local communities to provide emergency food and practical support."
+      },
+      {
+        "name": "Changing Minds",
+        "description": "Building public understanding and challenging assumptions about hunger and poverty."
+      },
+      {
+        "name": "Changing Policy",
+        "description": "Influencing policy solutions and gathering insight to tackle the root causes of food bank need."
+      }
+    ],
+    "cause_area": {
+      "ntee_code": null,
+      "major_group": "Human Services",
+      "source": "llm"
+    },
+    "geographic_scope": "national"
+  },
+  "financials": {
+    "years": [
+      {
+        "fiscal_year": 2025,
+        "revenue": 62813000.0,
+        "expenses": 75185000.0,
+        "total_assets": 15236000.0
+      },
+      {
+        "fiscal_year": 2024,
+        "revenue": 54052000.0,
+        "expenses": 61962000.0,
+        "total_assets": 27608000.0
+      }
+    ],
+    "revenue_growth_pct": 16.2,
+    "size_bucket": "10M-100M",
+    "employee_count": null,
+    "auditor_firm": null,
+    "source": "annual_report",
+    "propublica_match": null
+  },
+  "contacts": {
+    "leaders": [
+      {
+        "name": "Natalie Campbell",
+        "title": "Chair of Trustees"
+      },
+      {
+        "name": "Emma Revie",
+        "title": null
+      },
+      {
+        "name": "Matthew van Duyvenbode",
+        "title": null
+      },
+      {
+        "name": "Danni Malone",
+        "title": null
+      },
+      {
+        "name": "Emma Roberts",
+        "title": null
+      },
+      {
+        "name": "Helen Barnard",
+        "title": null
+      },
+      {
+        "name": "Lynda Battarbee",
+        "title": null
+      },
+      {
+        "name": "Tina Higgs",
+        "title": null
+      },
+      {
+        "name": "Nahida Ahmed",
+        "title": null
+      },
+      {
+        "name": "Sophie Carre",
+        "title": null
+      }
+    ],
+    "email": null,
+    "phone": null,
+    "contact_url": null
+  },
+  "buying_signals": {
+    "open_roles": [],
+    "executive_search_open": false,
+    "rfps": [],
+    "leadership_changes": [],
+    "capital_projects": [],
+    "campaign": null
+  },
+  "timing": {
+    "recent_news": [],
+    "events": []
+  },
+  "network": {
+    "funders": [],
+    "memberships": []
+  },
+  "meta": {
+    "input": "https://www.trusselltrust.org",
+    "resolved_url": "https://www.trussell.org.uk/",
+    "resolution_method": "url_given",
+    "crawled_at": "2026-09-22T19:47:13+00:00",
+    "pages_crawled": [
+      {
+        "url": "https://www.trussell.org.uk/",
+        "type": "html",
+        "method": "http",
+        "chars": 1742
+      },
+      {
+        "url": "https://www.trussell.org.uk/our-work/what-we-do/annual-reports",
+        "type": "html",
+        "method": "http",
+        "chars": 774
+      },
+      {
+        "url": "https://cms.trussell.org.uk/sites/default/files/2026-06/annual_report_2024_25.pdf",
+        "type": "pdf",
+        "method": "http",
+        "chars": 15000
+      },
+      {
+        "url": "https://www.trussell.org.uk/our-work",
+        "type": "html",
+        "method": "http",
+        "chars": 1063
+      },
+      {
+        "url": "https://www.trussell.org.uk/our-work/ending-the-need-for-food-banks/our-strategy",
+        "type": "html",
+        "method": "http",
+        "chars": 2146
+      },
+      {
+        "url": "https://www.trussell.org.uk/our-work/meet-the-team",
+        "type": "html",
+        "method": "http",
+        "chars": 6047
+      }
+    ],
+    "failed_pages": [
+      {
+        "url": "https://trusselltrustprod.prod.acquia-sites.com/sites/default/files/2025-01/trussell_annual_report_2324.pdf",
+        "error": "PDF contained no extractable text (likely scanned)"
+      }
+    ],
+    "field_sources": {
+      "organization": [
+        "https://www.trussell.org.uk/",
+        "https://cms.trussell.org.uk/sites/default/files/2026-06/annual_report_2024_25.pdf"
+      ],
+      "fit": [
+        "https://www.trussell.org.uk/our-work",
+        "https://www.trussell.org.uk/our-work/ending-the-need-for-food-banks/our-strategy",
+        "https://cms.trussell.org.uk/sites/default/files/2026-06/annual_report_2024_25.pdf"
+      ],
+      "financials": [
+        "https://cms.trussell.org.uk/sites/default/files/2026-06/annual_report_2024_25.pdf"
+      ],
+      "contacts": [
+        "https://www.trussell.org.uk/our-work/meet-the-team",
+        "https://cms.trussell.org.uk/sites/default/files/2026-06/annual_report_2024_25.pdf"
+      ]
+    },
+    "tokens": {
+      "claude-haiku-4-5": {
+        "input": 6434,
+        "output": 168
+      },
+      "claude-sonnet-5": {
+        "input": 14029,
+        "output": 3559
+      }
+    },
+    "cost_usd": 0.070922,
+    "warnings": [
+      "no confident ProPublica match; financials are from the site only (best name score 58)"
+    ]
+  }
+}

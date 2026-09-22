@@ -155,11 +155,19 @@ pages selected by scanning locally for financial markers rather than taking a
 fixed prefix — Feeding America's 990 is **91 pages with the statements at page
 86**, so a first-ten-pages cap would read the cover and capture no numbers.
 
+RSS/Atom feeds are probed on the news or blog host as well as the main one,
+because organisations routinely run the blog on a separate subdomain and
+declare the feed only there. `khanacademy.org` advertises no feed;
+`blog.khanacademy.org` has one with ten dated posts.
+
 **Fallbacks.** A page that yields too little text, or whose homepage has almost
-no anchors, is re-fetched with headless Chromium. So is any page answering
+no anchors, is re-fetched with headless Chromium. So is any resource answering
 401/403/406/429/503, which usually means bot protection rather than a missing
-page. Requests retry twice with backoff on network errors, 429 and 5xx; a 404
-fails immediately. Every failure is recorded in `meta.failed_pages`.
+page — HTML is re-rendered, while feeds and PDFs go through the browser's HTTP
+stack instead, since *rendering* a feed returns Chromium's XML viewer markup
+rather than the feed. Requests retry twice with backoff on network errors, 429
+and 5xx; a 404 fails immediately. Every failure is recorded in
+`meta.failed_pages`.
 
 **Extract.** All documents are labelled with their source URL and sent to
 Sonnet with the schema, with instructions to use only the supplied text and to
@@ -195,7 +203,8 @@ Pydantic models, so the prompt cannot drift from what validation will accept.
 
 ## 7. Schema and justification
 
-Full schema: [`examples/feeding-america.json`](examples/). Grouped by the
+Full schema: [`examples/feedingamerica-org.json`](examples/feedingamerica-org.json).
+Grouped by the
 question each field answers — see §2 for the table.
 
 Design decisions worth calling out:
@@ -225,7 +234,73 @@ costs no tokens — it's a header and HTML-pattern check (§11).
 
 ## 8. Cost, scale and feasibility
 
-<!-- MEASURED-NUMBERS -->
+All figures below are **measured**, from the five-organisation run committed in
+`examples/` — taken from each profile's own `meta.tokens` and `meta.cost_usd`,
+not estimated.
+
+| Organisation | Cost | Haiku in/out | Sonnet in/out | Pages | PDFs | Browser |
+|---|---:|---:|---:|---:|---:|---:|
+| charity: water | $0.1089 | 4,467 / 153 | 16,140 / 7,143 | 7 | 2 | 0 |
+| Code for America | $0.0983 | 1,677 / 170 | 22,047 / 5,164 | 8 | 2 | 5 |
+| Feeding America | $0.0757 | 5,905 / 143 | 21,766 / 2,553 | 7 | 2 | 0 |
+| Khan Academy | $0.0645 | 5,015 / 172 | 17,385 / 2,388 | 8 | 0 | 1 |
+| The Trussell Trust | $0.0709 | 6,434 / 168 | 14,029 / 3,559 | 6 | 1 | 0 |
+| **Mean** | **$0.0837** | 4,699 / 161 | 18,273 / 4,161 | 7.2 | 1.4 | 1.2 |
+
+**Where the money goes.** Haiku is **7%** of the bill and Sonnet **93%**.
+Within Sonnet the split is input $0.183 / output $0.208 — **output is the
+larger half**, which is easy to miss when estimating, since the schema is big
+and a well-populated profile is a lot of JSON.
+
+**Non-token costs per organisation:** ~7.2 HTTP requests plus robots/sitemap/
+feed probes, 1.4 PDFs downloaded, and **17% of pages rendered in headless
+Chromium** — a second or two of real CPU each, and by far the most expensive
+thing here that isn't tokens.
+
+### At 500,000 organisations
+
+| Scenario | Cost |
+|---|---|
+| One full pass, as built | **~$41,800** |
+| Full pass via the Batch API (50%) | ~$20,900 |
+| Quarterly refresh of everything | ~$167,000/yr |
+| Tiered refresh (below) | **~$25,000/yr** |
+
+Compute alone: 500k × 7.2 ≈ **3.6M HTTP requests** and ~**600k browser
+renders** per pass. At that volume the crawl needs per-domain rate limiting and
+a scheduler far more than it needs a cheaper model.
+
+### What I'd change to bring it down
+
+Ordered by measured impact:
+
+1. **Batch API — ~50% off, no quality cost.** This work is not
+   latency-sensitive. Nothing else on this list is as close to free.
+2. **Tiered refresh, ~80% off steady state.** The fields have completely
+   different half-lives. Mission, programs and cause area change yearly;
+   financials annually, on a filing schedule we can predict; news, jobs and
+   events weekly. Re-extracting a whole profile to learn about one new job
+   posting is the single biggest waste in the current design. Re-crawl on
+   content hash, `Last-Modified` and sitemap `lastmod`, and only re-run the
+   sections whose sources actually changed.
+3. **Shrink the output.** Output is 53% of the Sonnet bill and the schema
+   invites verbosity — programme descriptions came back as full sentences when
+   a phrase would do. Tighter limits and an instruction to omit empty sections
+   should cut output materially. This is the cheapest unexplored win.
+4. **Drop 990 PDFs where IRS data already covers the year.** PDFs are ~45% of
+   extraction input. Measured caveat: ProPublica **lags** — for both US test
+   organisations the most recent filing exists there only as a PDF with no
+   structured figures, so this saves money only for settled years, not the
+   current one, which is the year a seller cares about most.
+5. **Prompt caching** on the fixed system prompt and schema — about 1,850 of
+   18,273 input tokens (~10%) are identical on every call. Real but smaller
+   than it first appears, because the documents dominate.
+6. **Haiku for simple organisations.** Khan Academy has no PDFs and cost
+   $0.0645; sites with no financial documents may not need Sonnet at all.
+   Route on whether a PDF was retrieved.
+7. **IRS bulk data instead of per-organisation API calls** — no tokens either
+   way, but it removes a network round trip and a third-party dependency from
+   the hot path.
 
 ## 9. Categorisation (bonus)
 
@@ -269,11 +344,16 @@ sampling in point 4 would surface.
 - **ProPublica is US-only**, and it lags: both US test organisations' most
   recent filings exist there only as PDFs with no structured figures. Non-US
   organisations get financials only from what's on their site.
-- **Name matching against ProPublica can mis-match.** It's deliberately strict
-  (threshold 90) because a wrong EIN silently attaches someone else's finances.
-  An EIN printed on the site is used directly when available and is far more
-  reliable — charity: water's legal name is "Charity Global Inc", which name
-  matching would never have found.
+- **Name matching against ProPublica can mis-match**, and did. An early version
+  scored names with `token_set_ratio` alone, which returns 100 whenever one
+  name's tokens are a subset of the other's; it matched the UK charity Trussell
+  to "Robert And Martha Trussell Familyfoundation" at 100 and attached that
+  foundation's finances to the profile. Matching now requires two scorers to
+  agree, which also rejects Feeding America's independently-run member food
+  banks. It is deliberately strict because a wrong EIN is worse than no EIN — it
+  fails silently and looks plausible. An EIN printed on the site is used
+  directly when available and is far more reliable: charity: water's legal name
+  is "Charity Global Inc", which no name match would ever have found.
 - **Six pages per organisation is a real constraint.** When a site has several
   financial documents, they take slots from leadership and news pages. Feeding
   America's profile has one named leader for this reason.
@@ -287,6 +367,13 @@ sampling in point 4 would surface.
 - **Freshness is inherited.** If an organisation's site is a year out of date,
   so is its profile. `meta.crawled_at` records when we looked.
 - **`robots.txt` is respected**, so some sites will legitimately yield less.
+- **Sites rate-limit you, and the effect is cumulative.** After a day of
+  development runs, `codeforamerica.org` began returning 403 to requests that
+  had succeeded earlier the same day; full page rendering still passes their
+  challenge but the raw request path does not. At 500,000 organisations this
+  stops being an inconvenience and becomes a design constraint: per-domain rate
+  limiting, a real contact address in the user agent, and spreading a refresh
+  cycle over time rather than crawling in bursts.
 
 ## 11. What I'd improve with more time
 
@@ -302,10 +389,52 @@ sampling in point 4 would surface.
   board and reading its JSON API would fix `open_roles` properly.
 - **Tech-stack detection**, which is free: response headers, script sources and
   HTML patterns, no tokens at all.
+- **Per-domain rate limiting and polite scheduling**, which the blocking above
+  showed is not optional at scale.
 - **A small labelled eval set.** With ~30 hand-checked organisations, prompt
   and model changes could be measured rather than eyeballed — and the
   run-to-run extraction variance above could be quantified instead of noted.
 
 ## 12. What I spent
 
-<!-- MEASURED-SPEND -->
+**About $1.55 of Claude API usage in total**, summed from the per-run cost that
+every run prints. Roughly half of that is the committed test-set runs
+(~$0.83 across two full passes); the rest is development — debugging stages
+individually, and re-running organisations after each fix.
+
+Build time was roughly five hours, in the assignment's 2–6 hour range.
+
+### What the test set actually produced
+
+Field coverage across the five organisations:
+
+| Field | Coverage | |
+|---|---|---|
+| mission | 5/5 | |
+| financials (≥2 years) | 5/5 | |
+| named leaders | 5/5 | |
+| cause area from IRS NTEE | 4/5 | the fifth is UK, so no IRS record |
+| EIN | 3/5 | |
+| phone or email | 3/5 | |
+| auditor firm | 3/5 | from the PDFs — not available anywhere else |
+| recent news | 2/5 | |
+| events | 1/5 | |
+| active campaign | 1/5 | |
+| **open roles** | **0/5** | see limitations |
+
+One failed page across 36 fetched (a scanned PDF with no text layer), and no
+failed organisations.
+
+**The honest weak spot is `open_roles` at 0/5.** Jobs pages are almost always a
+JavaScript-rendered third-party board on another domain, and it's the field a
+seller would most want. Reading Greenhouse/Lever/Workday JSON APIs directly
+would fix it properly, and is top of §11 for a reason.
+
+Two results worth flagging as the payoff for forcing financial documents:
+
+- **Feeding America**: 5 fiscal years, 2020–2024, from two Form 990 PDFs merged
+  with ProPublica — plus auditor RSM US LLP and 421 employees, neither of which
+  is in the IRS structured data.
+- **The Trussell Trust**: a UK charity with no IRS record at all, yet two years
+  of financials (£62.8M and £54.1M) read out of a **150-page** annual report
+  whose accounts begin on page 101.
