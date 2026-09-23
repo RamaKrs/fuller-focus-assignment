@@ -28,9 +28,6 @@ nonprofits needs that information to decide whether an organisation is worth
 approaching, and when. Collecting it by hand takes a researcher around half an
 hour per organisation.
 
-The real problem isn't the first collection but rather the second. A database
-of 500,000 nonprofits is substantially wrong within a quarter. That framing drove most of the decisions below.
-
 ## 2. Value
 
 The schema answers four questions a seller asks, in order:
@@ -52,17 +49,10 @@ The schema answers four questions a seller asks, in order:
 3. **Segment and route** on `size_bucket` + `cause_area` + `geographic_scope`.
 4. **Prioritise** on `revenue_growth_pct`. A nonprofit growing 26% a year is a
    different prospect from one shrinking at the same size.
-5. **Trigger** on the timing fields. A leadership change or a newly announced
-   campaign creates a task in a rep's queue. This is the part that makes it a
-   pipeline rather than a directory — nobody works a directory.
-6. **Verify before sending.** `field_sources` records which page each group of
-   fields came from, so a rep can click through and check a claim. Reps do not
-   trust unverifiable machine output, and one hallucinated revenue figure in a
-   first email ends the relationship.
 
 ### Why the schema is deliberately generic
 
-A donor-CRM vendor, an audit firm, an executive search firm and a gala caterer
+A donor-CRM vendor, an audit firm and an executive search firm
 want overlapping but different fields. We already extract `auditor_firm`, which
 is the single best field for an accounting firm doing competitive displacement
 and close to worthless for a caterer.
@@ -70,9 +60,7 @@ and close to worthless for a caterer.
 Choosing one of those buyers is a business decision, not an engineering one,
 and getting it wrong bakes a bad assumption into 500,000 rows. So V1 collects a
 **common core** that any nonprofit-seller needs — identity, fit, capacity,
-contacts, timing — and leaves buyer-specific fields to a layer above.
-
-Generic is not a hedge here, it is what makes the refresh model work:
+contacts — and leaves buyer-specific fields to a layer above.
 
 - **A narrow, expensive profile can only be built for a known target list.**
   That is account research, not prospecting. Prospecting needs breadth first
@@ -106,10 +94,7 @@ input → resolve URL → crawl homepage → discover links (anchors + sitemap +
 needs a URL guess). The reasons, in order of how much they mattered:
 
 - **Predictable cost.** A free-roaming agent's bill depends on how confusing it
-  finds a site. At 500,000 organisations a long tail of agents wandering
-  through course catalogues is the difference between a product and an
-  unbounded invoice. Here cost is bounded by construction: a hard character
-  budget caps extraction input no matter how much the crawler finds.
+  finds a site. At 500,000 organisations that approach sounds expensive.
 - **Refreshability.** This is the one that matters most and is easiest to miss.
   A pipeline with named stages can be re-entered at any stage. An agent that
   decides its own route cannot be asked to "just re-check the news page",
@@ -117,14 +102,12 @@ needs a URL guess). The reasons, in order of how much they mattered:
   into the main cost argument.
 - **Debuggable.** Each stage runs alone (`--stage links|pick|crawl`), and a bad
   field traces to the page that produced it through `meta.field_sources`.
-- **Most of the flexibility anyway.** The genuinely hard judgement — *which of
-  these 198 links describe the organisation rather than its product?* — is
-  still made by a model. Everything around it is deterministic.
+- **Most of the flexibility anyway.**
 
 **Anything code can compute, code computes**: growth rates, size buckets, the
 NTEE-to-cause-area mapping, the CSV row, the cost accounting. The model only
-does reading comprehension. This is also what keeps categories consistent
-across organisations.
+does reading comprehension. **This is also what keeps categories consistent
+across organisations.**
 
 ## 4. MVP
 
@@ -182,12 +165,8 @@ everything else hangs off it.
 should need, and most of the excess is failure handling. The brief asks for
 that explicitly ("fallbacks, assumptions, retries"), but there is a difference
 between fallbacks that earn their place and fallbacks written for imagined
-problems. So I kept the ones I could show firing in the run logs — browser
-rendering, the 403 retry, marker-based PDF page selection, ProPublica query
-variants, the IRS/site financial merge — and deleted the ones that never
-executed once across six full runs: a keyword link-picker fallback and a
-section-by-section validation salvage. A fallback you have never seen run is
-untested code, not insurance.
+problems. **A fallback you have never seen run is
+untested code.**
 
 ## 5. Methodology
 
@@ -269,12 +248,11 @@ cheaper and gets the numbers wrong:
 | Trussell | Sonnet 5 | $0.0324 | 62,813,000 |
 | Trussell | Haiku 4.5 | $0.0134 | **62,813** |
 
+I tried using Haiku for everything to make it cheaper but:
+
 UK charity accounts are printed in **£'000s**: the table reads "62,813" meaning
 £62.8M. Sonnet applied the convention, Haiku took it literally and was wrong by
-1000×, which silently moves the organisation from `10M-100M` to `<1M`. Haiku
-was *better* at narrative fields (6 programmes to 3, 8 leaders to 7) — it fails
-specifically on numbers under presentation conventions. That split is useful,
-and "What I'd improve" uses it.
+1000×, which silently moves the organisation from `10M-100M` to `<1M`.
 
 **Structured outputs, where they fit.** The link picker uses the API's
 structured outputs, so its enum values cannot come back invalid. The full
@@ -315,22 +293,16 @@ and the most expensive thing here that is not tokens.
 and fiscal years (22) are identical across the test set before and after.
 Output per organisation fell 4,161 → 697 tokens.
 
-The lesson generalises: the default settings were the problem, not the
-architecture. Nobody asks for thinking tokens on a JSON extraction task, and
-nobody notices paying for them.
-
 ### At 500,000 organisations
 
 | Scenario | Cost |
 |---|---|
 | One full pass, as built | **~$17,800** |
-| Full pass via the Batch API (50%) | **~$8,900** |
+| Full pass via the Batch API (50%) | **~$8,900** | 
 | Naive quarterly refresh of everything | ~$71,000/yr |
 | **Tiered refresh (below)** | **~$20,000/yr** |
 
-Compute per pass: ~2.7M HTTP requests and ~500k browser renders. At that volume
-the crawl needs per-domain rate limiting and a scheduler more than it needs a
-cheaper model — see the blocking incident in §8.
+Batch API: Claude's non real time alternative for big file requests.
 
 ### Tiered refresh: why "cheap and generic" is the strategy
 
@@ -359,11 +331,6 @@ rather than $71,000, for data that is *fresher* than quarterly.
 cannot be refreshed this way, because its fields don't separate by volatility —
 they separate by customer. Cheap and generic is not the compromise; it is the
 thing that makes continuous freshness affordable.
-
-**Honest status:** the architecture supports this — stages are separable,
-`field_sources` records which page fed each group, and the schema is already
-grouped by volatility. The tiered scheduler itself is **not implemented in
-V1**. It is the first thing I would build next.
 
 ### Other levers, in order
 
@@ -400,24 +367,17 @@ V1**. It is the first thing I would build next.
 - **Some high-value fields were cut because they were unreachable, not because
   they don't matter.** `open_roles` and `rfps` came back 0/5: jobs live in
   JavaScript-rendered third-party boards (Greenhouse, Lever, Workday) on
-  another domain. That is a gap in exactly the "why now" signals §2 argues are
-  the point, and the fix is a job-board API reader, not a better prompt.
+  another domain. The fix is a job-board API reader, not a better prompt.
 - **`campaign` is 0/5 and on probation.** It survived the cut because a named
   campaign is a strong signal, but the one instance the old schema found came
   from an annual report the tighter page budget no longer fetches.
 - **Extraction varies between runs.** The same PDFs produced FY2025 revenue of
   $82,267,852 on one run and $90,800,000 on another. This is why IRS data is
-  preferred where it exists and why `field_sources` matters.
+  preferred where it exists.
 - **Scanned PDFs yield nothing** — no OCR; the page is recorded as failed.
 - **Freshness is inherited.** If a site is a year out of date, so is the
   profile. `meta.crawled_at` records when we looked.
 - **`robots.txt` is respected**, so some sites legitimately yield less.
-- **Sites rate-limit, and it is cumulative.** After a day of development runs
-  `codeforamerica.org` began returning 403 to requests that had succeeded
-  earlier the same day. At 500,000 organisations this stops being an
-  inconvenience and becomes a design constraint: per-domain rate limiting, a
-  real contact address in the user agent, and spreading a refresh cycle over
-  time rather than crawling in bursts.
 
 ---
 
@@ -455,22 +415,15 @@ flag.
 
 - **The tiered refresh scheduler** (§7) — the single highest-value addition,
   and the one the architecture is already shaped for.
-- **Job-board API readers** for Greenhouse, Lever and Workday. Zero token cost,
-  restores the strongest buying signal.
+- **Job-board API readers** for Greenhouse, Lever and Workday.
 - **Split the models by field type.** Haiku is reliable on narrative and
   dangerous on numbers; a Haiku pass for news and programmes with Sonnet
-  reserved for financial documents would cut cost again without the 1000×
-  error.
+  reserved for financial documents would cut cost again.
 - **Concurrency.** V1 is deliberately synchronous. Pages within an organisation
   and organisations within a batch are embarrassingly parallel.
 - **A real search step** for URL resolution instead of model recall.
-- **Tech-stack detection**, which is free — headers, script sources and HTML
-  patterns, no tokens.
 - **A labelled eval set.** With ~30 hand-checked organisations, prompt and model
-  changes could be measured rather than eyeballed, and the run-to-run variance
-  noted in §8 could be quantified.
-- **Per-domain rate limiting**, which §8's blocking incident showed is not
-  optional at scale.
+  changes could be measured rather than eyeballed.
 
 ## What I spent
 
@@ -495,7 +448,7 @@ failed pages out of 27 fetched.**
 | phone | 3/5 | |
 | auditor firm | 3/5 | from the PDFs — not available anywhere else |
 | recent news | 2/5 | |
-| campaign | 0/5 | on probation |
+| campaign | 0/5 | |
 
 Two results that justify forcing financial documents into the crawl:
 
