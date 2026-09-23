@@ -275,9 +275,9 @@ def slugify(text: str) -> str:
 # ---------------------------------------------------------------------------
 # 2. SCHEMA
 # ---------------------------------------------------------------------------
-# Justification lives in the README: every field answers one of four sales
+# Justification lives in the README: every field answers one of sales
 # questions — Is this a good fit? Can they afford it? Who do I contact?
-# Why reach out now?
+
 
 GeographicScope = Literal["local", "national", "international"]
 CampaignStatus = Literal["active", "completed", "announced", "unknown"]
@@ -1193,37 +1193,6 @@ def groups_for(text: str, url: str) -> list[str]:
     ]
 
 
-def pick_links_by_keyword(candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
-    """Deterministic picker: the best link for each schema group, in priority
-    order. Used as the fallback when the model call fails."""
-    best: dict[str, tuple[int, dict[str, str]]] = {}
-    for link in candidates:
-        covers = groups_for(link["text"], link["url"])
-        score = report_score(link["text"], link["url"]) + len(covers)
-        for group in covers:
-            current = best.get(group)
-            if current is None or score > current[0]:
-                best[group] = (score, link)
-
-    chosen: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for group in GROUP_PRIORITY:
-        if group not in best or len(chosen) >= MAX_PAGES:
-            continue
-        link = best[group][1]
-        if link["url"] in seen:
-            continue
-        seen.add(link["url"])
-        chosen.append(
-            {
-                "url": link["url"],
-                "covers": groups_for(link["text"], link["url"]),
-                "reason": f"keyword match for {group}",
-            }
-        )
-    return chosen
-
-
 def reserve_report_links(candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
     """Financial documents, chosen in code and never left to the model."""
     reserved: list[dict[str, Any]] = []
@@ -1568,8 +1537,9 @@ def pick_links(
         except Exception as exc:
             log.warning("link picker failed (attempt %d): %s", attempt + 1, exc)
 
-    log.info("falling back to keyword link picking")
-    return pick_links_by_keyword(candidates)[:limit]
+    log.warning("link picker failed twice; reading only the homepage and "
+                "any reserved financial pages")
+    return []
 
 
 EXTRACT_SYSTEM = """\
@@ -1619,16 +1589,6 @@ prose, no explanation, no markdown fences:
 # ("The compiled grammar is too large"), so the schema goes in the prompt and
 # Pydantic enforces it on the way back. The link picker's schema is small
 # enough that it still uses structured outputs.
-SECTION_MODELS: dict[str, type[BaseModel]] = {
-    "organization": OrganizationExtract,
-    "fit": FitExtract,
-    "financials": FinancialsExtract,
-    "contacts": Contacts,
-    "buying_signals": BuyingSignals,
-    "timing": Timing,
-}
-
-
 def extraction_schema_text() -> str:
     """The schema sent to the model, generated from the Pydantic models.
 
@@ -1652,19 +1612,6 @@ def parse_json_reply(text: str) -> dict[str, Any]:
         raise
 
 
-def _normalise_field_sources(raw: Any) -> list[FieldSource]:
-    """Accept [{group, sources}] or {group: [numbers]}."""
-    sources: list[FieldSource] = []
-    if isinstance(raw, dict):
-        raw = [{"group": key, "sources": value} for key, value in raw.items()]
-    for item in raw or []:
-        try:
-            sources.append(FieldSource.model_validate(item))
-        except ValidationError:
-            continue
-    return sources
-
-
 def expand_field_sources(
     field_sources: list[FieldSource], sources: list[dict[str, Any]]
 ) -> dict[str, list[str]]:
@@ -1683,38 +1630,6 @@ def expand_field_sources(
         if urls:
             expanded[entry.group] = urls
     return expanded
-
-
-def salvage_extraction(
-    data: dict[str, Any]
-) -> tuple[ExtractionResult | None, list[str]]:
-    """Validate section by section, keeping whatever is well formed.
-
-    One bad enum value in an events list shouldn't cost us the mission
-    statement, so a section that fails validation is dropped on its own and
-    noted in the warnings rather than failing the whole profile.
-    """
-    sections: dict[str, Any] = {}
-    warnings: list[str] = []
-    for key, model in SECTION_MODELS.items():
-        raw = data.get(key)
-        if raw is None:
-            continue
-        try:
-            sections[key] = model.model_validate(raw)
-        except ValidationError as exc:
-            warnings.append(
-                f"dropped invalid section '{key}' ({exc.error_count()} errors)"
-            )
-    if "organization" not in sections:
-        return None, warnings
-    return (
-        ExtractionResult(
-            field_sources=_normalise_field_sources(data.get("field_sources")),
-            **sections,
-        ),
-        warnings,
-    )
 
 
 def build_extraction_prompt(
@@ -1815,8 +1730,9 @@ def extract(
                         },
                     ]
                     continue
-                result, salvage_warnings = salvage_extraction(data)
-                return result, warnings + salvage_warnings
+                log.warning("extraction still invalid after a retry")
+                warnings.append(f"extraction did not match the schema: {exc}")
+                return None, warnings
         except Exception as exc:
             log.warning("extraction failed (attempt %d): %s", attempt + 1, exc)
             warnings.append(f"extraction error: {type(exc).__name__}")
@@ -2392,10 +2308,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "'pick' adds link selection, 'crawl' adds fetching and parsing",
     )
     parser.add_argument(
-        "--no-llm", action="store_true",
-        help="use the keyword picker instead of the model (no API cost)",
-    )
-    parser.add_argument(
         "--verbose", action="store_true", help="debug logging"
     )
     args = parser.parse_args(argv)
@@ -2419,7 +2331,6 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return show_stage(
             args.org, stage=args.stage, use_browser=not args.no_browser,
-            use_llm=not args.no_llm,
         )
 
     targets = read_targets(args)
@@ -2533,8 +2444,7 @@ def print_summary(
 
 
 def show_stage(
-    value: str, stage: str = "links", use_browser: bool = True,
-    use_llm: bool = True,
+    value: str, stage: str = "links", use_browser: bool = True
 ) -> int:
     """Debug view of one pipeline stage, stopping before extraction."""
     if not looks_like_url(value):
@@ -2579,13 +2489,8 @@ def show_stage(
         print(f"  {item['url']}")
 
     budget = max(1, MAX_PAGES - len(reserved))
-    if use_llm:
-        picked = pick_links(candidates, home_url, limit=budget)
-        label = f"model picks ({LINK_MODEL})"
-    else:
-        picked = pick_links_by_keyword(candidates)[:budget]
-        label = "keyword picks"
-    print(f"\n{label}  {len(picked)}")
+    picked = pick_links(candidates, home_url, limit=budget)
+    print(f"\nmodel picks ({LINK_MODEL})  {len(picked)}")
     for item in picked:
         print(f"  {','.join(item['covers'])[:34]:<34}  {item['url'][:78]}")
         print(f"  {'':34}  -> {item['reason'][:78]}")

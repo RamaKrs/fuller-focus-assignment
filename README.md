@@ -13,11 +13,10 @@ Input is an organisation **name or URL**. Output is `output/<slug>.json` (the
 full profile) and `output/combined.csv` (one row per organisation, ready for a
 CRM). Five worked examples are committed in [`examples/`](examples/).
 
-**Measured: $0.0356 per organisation**, which is ~$17,800 for a pass over
-500,000, or ~$8,900 on the Batch API.
+**Measured: $0.0356 per organisation**
+#### Disclaimer: A lot of the code is in place just to handle messy data and unexpected errors. So much of it is not worth reviewing. The real pipelines is in process_org().
 
 ---
-
 ## 1. Problem statement
 
 Useful information about a nonprofit is scattered across its website, its
@@ -26,12 +25,8 @@ nonprofits needs that information to decide whether an organisation is worth
 approaching, and when. Collecting it by hand takes a researcher around half an
 hour per organisation.
 
-But the real problem isn't the first collection — it's the second. A database
-of 500,000 nonprofits is substantially wrong within a quarter: people leave,
-campaigns launch, filings land, programmes close. **The hard requirement is not
-"extract this data once", it's "keep it true cheaply enough that you can afford
-to keep doing it."** That framing drove most of the decisions below, including
-the ones that look like under-engineering.
+The real problem isn't the first collection but rather the second. A database
+of 500,000 nonprofits is substantially wrong within a quarter. That framing drove most of the decisions below.
 
 ## 2. Value
 
@@ -42,14 +37,12 @@ The schema answers four questions a seller asks, in order:
 | **Is this a good fit?** | mission, programs, cause area, geographic scope |
 | **Can they afford it?** | multi-year revenue / expenses / assets, growth rate, size bucket, employee count, auditor firm |
 | **Who do I contact?** | named leaders with titles, phone |
-| **Why reach out now?** | leadership changes, active campaign, recent news |
 
 ### How it plugs into a sales workflow
 
 1. **Key on EIN.** It is the join key — stable, unique, and it dedupes against
    existing CRM records while merging cleanly with IRS data and third-party
-   sources. Without it, every row is a guess at identity. This is why EIN is
-   kept despite only 3/5 coverage.
+   sources. Without it, every row is a guess at identity.
 2. **`combined.csv` imports directly** into HubSpot or Salesforce. Flat
    columns, lists collapsed to counts and short joins. That is the CSV's only
    reason to exist; the JSON keeps everything.
@@ -143,14 +136,13 @@ python main.py "Feeding America"
 
 ```
 usage: main.py [-h] [--batch FILE] [--no-browser] [--stage {links,pick,crawl}]
-               [--no-llm] [--verbose] [org]
+               [--verbose] [org]
 ```
 
 | Flag | Effect |
 |---|---|
 | `--batch FILE` | one name or URL per line; one failure doesn't stop the run |
 | `--stage links\|pick\|crawl` | stop early and print that stage |
-| `--no-llm` | keyword picker instead of the model — crawl at zero API cost |
 | `--no-browser` | disable the Playwright fallback |
 
 What it does on a real run, taken from the committed examples:
@@ -167,7 +159,19 @@ What it does on a real run, taken from the committed examples:
 **Code layout.** Everything is in one `main.py`, in eleven numbered sections
 with small functions. That is a deliberate V1 choice at this size — the whole
 pipeline reads top to bottom — and the sections map one-to-one onto modules
-when it grows.
+when it grows. `process_org` is the entire pipeline in about a hundred lines;
+everything else hangs off it.
+
+**On length.** It is ~2,500 lines, which is more than a V1 of this scope
+should need, and most of the excess is failure handling. The brief asks for
+that explicitly ("fallbacks, assumptions, retries"), but there is a difference
+between fallbacks that earn their place and fallbacks written for imagined
+problems. So I kept the ones I could show firing in the run logs — browser
+rendering, the 403 retry, marker-based PDF page selection, ProPublica query
+variants, the IRS/site financial merge — and deleted the ones that never
+executed once across six full runs: a keyword link-picker fallback and a
+section-by-section validation salvage. A fallback you have never seen run is
+untested code, not insurance.
 
 ## 5. Methodology
 
@@ -188,7 +192,8 @@ no model involved.
 
 **Pick pages.** Haiku receives the candidate list and returns **indices, not
 URLs** — it cannot invent a page that way, and the reply is a fraction of the
-tokens. Two failures fall back to a deterministic keyword picker.
+tokens. If it fails twice the run continues on the homepage and any reserved
+financial pages rather than guessing.
 
 **Financial documents are not left to the model.** One of the four page slots
 is reserved for annual reports, 990s and financial statements, chosen by
@@ -216,8 +221,8 @@ failure is recorded in `meta.failed_pages`.
 **Extract.** Documents are numbered and labelled with their source, then sent
 to Sonnet with the schema and instructions to use only the supplied text and
 return null rather than guess. The reply is validated with Pydantic; errors go
-back for one retry, and anything still invalid is salvaged section by section,
-so a bad enum in one list cannot cost the mission statement.
+back for one retry; anything still invalid is recorded as a warning rather
+than silently half-saved.
 
 **Enrich and compute.** ProPublica supplies multi-year IRS figures and the NTEE
 code, merged rather than substituted (§7). Then code fills in everything
