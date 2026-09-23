@@ -1,4 +1,5 @@
 # Nonprofit Data Scraper Agent
+### Loom video: https://www.loom.com/share/064db98555e149f08b073c276a311416
 
 Turns a nonprofit's scattered online footprint — web pages, annual-report PDFs,
 990 filings, news feeds — into one structured, validated profile.
