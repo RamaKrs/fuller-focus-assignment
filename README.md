@@ -9,6 +9,9 @@ python main.py https://www.charitywater.org
 python main.py --batch orgs.txt
 ```
 
+Setup is in [§4](#4-mvp) — it needs a virtualenv, `playwright install
+chromium`, and an `ANTHROPIC_API_KEY` in `.env`.
+
 Input is an organisation **name or URL**. Output is `output/<slug>.json` (the
 full profile) and `output/combined.csv` (one row per organisation, ready for a
 CRM). Five worked examples are committed in [`examples/`](examples/).
@@ -126,13 +129,26 @@ across organisations.
 ## 4. MVP
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate            # every new terminal needs this
 pip install -r requirements.txt
-playwright install chromium          # for JavaScript-rendered sites
+playwright install chromium          # ~170MB, for JavaScript-rendered sites
 
-cp .env.example .env                 # add your ANTHROPIC_API_KEY
+cp .env.example .env                 # then put your key in it
 python main.py "Feeding America"
 ```
+
+**Smoke test without an API key.** This crawls a site and prints what it
+found, making no model calls, so it verifies the install on its own:
+
+```bash
+python main.py https://www.charitywater.org --stage links
+```
+
+Requires Python 3.11+. On most Linux systems the interpreter is `python3`, not
+`python` — once the virtualenv is activated, `python` works. If you see
+`ModuleNotFoundError: No module named 'anthropic'`, the virtualenv isn't
+active: run `source .venv/bin/activate` again.
 
 ```
 usage: main.py [-h] [--batch FILE] [--no-browser] [--stage {links,pick,crawl}]

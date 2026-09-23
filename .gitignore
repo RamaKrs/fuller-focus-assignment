@@ -10,7 +10,6 @@ venv/
 
 # run output; examples/ is committed instead
 output/
-.venv/
 
 # internal build spec + the assignment brief (kept locally, not published)
 CLAUDE.md
